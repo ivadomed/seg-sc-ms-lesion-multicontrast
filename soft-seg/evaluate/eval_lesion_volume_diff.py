@@ -19,6 +19,8 @@ import nibabel as nib
 import numpy as np
 from loguru import logger
 from tqdm import tqdm
+import numpy as np
+from scipy.stats import mannwhitneyu
 
 
 def parse_args():
@@ -30,15 +32,16 @@ def parse_args():
     return parser.parse_args()
 
 
-def get_volume(segmentation_path, resolution):
-    
+def get_volume(segmentation_path, resolution, threshold=0.5):
     # Load the segmentation
     seg_img = nib.load(segmentation_path)
     seg_data = seg_img.get_fdata()
     # Compute volume
     voxel_volume = resolution[0] * resolution[1] * resolution[2]
-    lesion_volume = np.sum(seg_data > 0.5) * voxel_volume  # Count non-zero voxels
-
+    # Thresholding the segmentation:
+    seg_data = seg_data[seg_data >= threshold]
+    # Compute volume in case of soft segmentation, i.e. volume of a voxel labeled 0.5 is counted as half a voxel
+    lesion_volume = np.sum(seg_data) * voxel_volume
     return lesion_volume
 
 
@@ -64,9 +67,13 @@ def main():
     bin_stds = []
     soft_avgs = []
     soft_stds = []
+    number_subjects = 0
+    number_sessions = 0
     for sub in tqdm(images):
+        number_subjects += 1
         # iterate over sessions
         for session in images[sub]:
+            number_sessions += 1
             # Iterate over the images
             session_bin_volumes = []
             session_soft_volumes = []
@@ -80,7 +87,7 @@ def main():
 
                 # Get volumes
                 volume_bin = get_volume(bin_path, resolution)
-                volume_soft = get_volume(soft_path, resolution)
+                volume_soft = get_volume(soft_path, resolution, threshold=1e-5)
                 session_bin_volumes.append(volume_bin)
                 session_soft_volumes.append(volume_soft)
             # Add the average and std of the session
@@ -89,9 +96,17 @@ def main():
             soft_avgs.append(np.mean(session_soft_volumes))
             soft_stds.append(np.std(session_soft_volumes))
 
+    # Print the number of subjects and sessions
+    logger.info(f"Number of subjects: {number_subjects}")
+    logger.info(f"Number of sessions: {number_sessions}")
+    
     # Print the avg of avg volumes per session
     logger.info(f"Average binary lesion volume: {np.mean(bin_avgs)} ± {np.mean(bin_stds)} mm³")
     logger.info(f"Average soft lesion volume: {np.mean(soft_avgs)} ± {np.mean(soft_stds)} mm³")
+
+    # Make statistic test to see if bin_stds and soft_stds are significantly different
+    stat, p_value = mannwhitneyu(bin_stds, soft_stds)
+    logger.info(f"Mann-Whitney U test between binary and soft lesion volume stds: stat={stat}, p-value={p_value}")
     
 
 if __name__ == "__main__":
