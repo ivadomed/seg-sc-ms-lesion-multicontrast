@@ -1,6 +1,19 @@
 """
 This script adds  fakes lesions to healthy spinal cord MRI images using predefined lesion shapes.
-It takes as 
+Input:
+    --lesion_path: Path to a binary lesion segmentation. (There should be only one lesion in the segmentation)
+    --example_im_path: Path to an example healthy spinal cord MRI image.
+    --seg_path: Path to the lesion segmentation of the healthy subject image.
+    --sc_seg_path: Path to the spinal cord segmentation of the healthy subject image.
+    --out_dir: Directory to save the augmented image and segmentation mask.
+Output:
+    Augmented image and segmentation mask saved in out_dir.
+
+Origin:
+    - This file was adapted from the LesionSCynth repo: https://github.com/rickymwalsh/LesionSCynth
+    - This file was then adapated in a fork of the above repo: https://github.com/plbenveniste/LesionSCynth/tree/plb/adapt_code
+
+Author: Pierre-Louis Benveniste
 """
 
 from pathlib import Path
@@ -485,8 +498,6 @@ if __name__ == '__main__':
     parser.add_argument('--out_dir', type=Path, default=None,
                         help='Path to directory into which the augmented image and segmentation mask will be saved.'
                              'If None, then nothing will be saved, and the augmented image will be plotted.')
-    parser.add_argument('--method', type=str, choices=['LSC', 'LM', 'lesionscynth', 'lesionmix'],
-                        default='lesionscynth', help='Method to use for data augmentation.')
     args = parser.parse_args()
 
     # Fix a seed to ensure reproducibility
