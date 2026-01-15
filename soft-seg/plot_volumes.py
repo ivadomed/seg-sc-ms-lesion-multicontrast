@@ -13,6 +13,7 @@ from pathlib import Path
 import nibabel as nib
 import numpy as np
 from tqdm import tqdm
+from scipy.stats import wilcoxon
 
 
 def parse_args():
@@ -75,6 +76,15 @@ def main():
     # Print the stds
     print(f"Soft segmentation volumes (std): {np.std(soft_volumes)}")
     print(f"Binary segmentation volumes (std): {np.std(binary_volumes)}")
+    
+    # we also perform a statistical test (wilcoxon) to compare the two distributions 
+    stat, p = wilcoxon(soft_volumes, binary_volumes)
+    print(f"Wilcoxon test statistic: {stat}, p-value: {p}")
+    # print if p>0.1 : then both are estimating the same volume
+    if p > 0.1:
+        print("The two segmentation methods estimate the same volume (p > 0.1)")
+    else:
+        print("The two segmentation methods estimate different volumes (p <= 0.1)")
 
 
 if __name__ == "__main__":
