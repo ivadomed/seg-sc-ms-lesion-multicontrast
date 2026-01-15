@@ -26,7 +26,7 @@ def run_segmentation(input_image, output_image, soft_seg=False):
     This function runs lesion segmentation on the input image and saves the prediction to the output image.
     """
     soft_ms_lesion_flag = "-soft-ms-lesion" if soft_seg else ""
-    assert os.system(f"SCT_USE_GPU=1 sct_deepseg lesion_ms -i {input_image} -o {output_image} -test-time-aug {soft_ms_lesion_flag}") == 0, "Error in lesion segmentation"
+    assert os.system(f"SCT_USE_GPU=1 sct_deepseg lesion_ms -i {input_image} -o {output_image} {soft_ms_lesion_flag}") == 0, "Error in lesion segmentation"
 
 
 def main():
@@ -43,17 +43,18 @@ def main():
     for img in tqdm(input_images, desc="Running lesion segmentation"):
         
         # Define output paths
+        site = img.split("/")[-3]
+        sub_name = img.split("/")[-2]
         img_name = img.split("/")[-1].replace(".nii.gz", "")
-        output_binary_path = os.path.join(output_folder, f"{img_name}_lesion_binary.nii.gz")
-        output_soft_path = os.path.join(output_folder, f"{img_name}_lesion_soft.nii.gz")
+        output_folder_site = os.path.join(output_folder, site, sub_name)
+        output_binary_path = os.path.join(output_folder_site, "binary", f"{img_name}_lesion.nii.gz")
+        output_soft_path = os.path.join(output_folder_site, "soft", f"{img_name}_lesion.nii.gz")
         
         # Run binary segmentation
         run_segmentation(img, output_binary_path, soft_seg=False)
-        print(f"Saved binary segmentation at: {output_binary_path}")
         
         # Run soft segmentation
         run_segmentation(img, output_soft_path, soft_seg=True)
-        print(f"Saved soft segmentation at: {output_soft_path}")
 
 
 if __name__ == "__main__":
