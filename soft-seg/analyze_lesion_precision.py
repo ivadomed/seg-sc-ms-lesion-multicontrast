@@ -5,7 +5,8 @@ It groups data by subject, calculates the Coefficient of Variation (CV) for repe
 and performs statistical tests to compare the two methods.
 
 Inputs:
-    - Input CSV file containing lesion volume data. 
+    - input: Input CSV file containing lesion volume data.
+    - output_folder: Path to the output folder to save plots and results. 
 
 Outputs:
     - precision_boxplot.png: Visual comparison of Coefficient of Variation.
@@ -27,10 +28,14 @@ import sys
 def parse_arguments():
     parser = argparse.ArgumentParser(description="Analyze lesion volume precision from CSV data.")
     parser.add_argument("-i", "--input", dest="csv_file", required=True, help="Path to the input CSV file.")
+    parser.add_argument("-o", "--output_folder", dest="output_folder", required=True, help="Path to the output folder.")
     return parser.parse_args()
 
 
-def analyze_precision(csv_path):
+def analyze_precision(csv_path, output_folder):
+    # Build output folder
+    os.makedirs(output_folder, exist_ok=True)
+
     # Load the CSV file
     print(f"Loading data from {csv_path}...")
     df = pd.read_csv(csv_path)
@@ -113,8 +118,8 @@ def analyze_precision(csv_path):
     plt.title('Lesion Volume Precision: Coefficient of Variation')
     plt.ylabel('Coefficient of Variation (%)')
     plt.tight_layout()
-    plt.savefig('precision_boxplot.png')
-    print("Saved precision_boxplot.png")
+    plt.savefig(os.path.join(output_folder, 'precision_boxplot.png'))
+    print(f"Saved {os.path.join(output_folder, 'precision_boxplot.png')}")
 
     # 2. Scatter plot
     plt.figure(figsize=(8, 8))
@@ -131,11 +136,11 @@ def analyze_precision(csv_path):
     plt.title('Precision Comparison per Subject')
     plt.legend()
     plt.tight_layout()
-    plt.savefig('precision_scatter.png')
-    print("Saved precision_scatter.png")
+    plt.savefig(os.path.join(output_folder, 'precision_scatter.png'))
+    print(f"Saved {os.path.join(output_folder, 'precision_scatter.png')}")
 
 if __name__ == "__main__":
     # Parse the arguments
     args = parse_arguments()
     # Analyze the lesion volume precision
-    analyze_precision(args.csv_file)
+    analyze_precision(args.csv_file, args.output_folder)
