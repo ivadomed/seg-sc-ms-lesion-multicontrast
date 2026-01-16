@@ -10,6 +10,7 @@ Author: Pierre-Louis Benveniste
 import argparse
 import os
 from pathlib import Path
+import pandas as pd
 import nibabel as nib
 import numpy as np
 from tqdm import tqdm
@@ -54,37 +55,76 @@ def main():
     os.makedirs(output_folder, exist_ok=True)
 
     # List soft and binary segmentation files
-    soft_files = list(Path(input_folder).rglob("*_lesion_soft.nii.gz"))
-    binary_files = list(Path(input_folder).rglob("*_lesion_binary.nii.gz"))
+    soft_files = list(Path(input_folder).rglob("*_lesion.nii.gz"))
+    soft_files = [str(f) for f in soft_files]
+    soft_files = [f for f in soft_files if "/soft/" in f]
+    binary_files = list(Path(input_folder).rglob("*_lesion.nii.gz"))
+    binary_files = [str(f) for f in binary_files]
+    binary_files = [f for f in binary_files if "/binary/" in f]
 
-    # Initialize volume lists
-    soft_volumes = []
-    binary_volumes = []
+    # Initialize dataframe of computed volumes
+    volumes_df = pd.DataFrame(columns=["subject", "soft_volume", "binary_volume"])
 
     # For each file in soft_files, compute the total lesion volume
     for soft_file in tqdm(soft_files, desc="Computing lesion volumes"):
         # Compute lesion volume
         soft_volume = compute_lesion_volume(soft_file)
-        soft_volumes.append(soft_volume)
+        soft_file_site = soft_file.split("/")[-4]
+        soft_file_sub = soft_file.split("/")[-3]
+        sub = soft_file_site + "_" + soft_file_sub
+        # Update the dataframe
+        new_line = pd.DataFrame({"subject": [sub], "soft_volume": [soft_volume]})
+        volumes_df = pd.concat([volumes_df, new_line], ignore_index=True)
 
     # For each file in binary_files, compute the total lesion volume
     for binary_file in tqdm(binary_files, desc="Computing lesion volumes"):
         # Compute lesion volume
         binary_volume = compute_lesion_volume(binary_file)
-        binary_volumes.append(binary_volume)
+        binary_file_site = binary_file.split("/")[-4]
+        binary_file_sub = binary_file.split("/")[-3]
+        sub = binary_file_site + "_" + binary_file_sub
+        # Update the dataframe
+        new_line = pd.DataFrame({"subject": [sub], "binary_volume": [binary_volume]})
+        volumes_df = pd.concat([volumes_df, new_line], ignore_index=True)
 
-    # Print the stds
-    print(f"Soft segmentation volumes (std): {np.std(soft_volumes)}")
-    print(f"Binary segmentation volumes (std): {np.std(binary_volumes)}")
-    
-    # we also perform a statistical test (wilcoxon) to compare the two distributions 
-    stat, p = wilcoxon(soft_volumes, binary_volumes)
-    print(f"Wilcoxon test statistic: {stat}, p-value: {p}")
-    # print if p>0.1 : then both are estimating the same volume
-    if p > 0.1:
-        print("The two segmentation methods estimate the same volume (p > 0.1)")
-    else:
-        print("The two segmentation methods estimate different volumes (p <= 0.1)")
+    # We save the volumes dataframe to a csv file
+    volumes_csv_path = os.path.join(output_folder, "lesion_volumes.csv")
+    volumes_df.to_csv(volumes_csv_path, index=False)
+
+    # For each subject, we compute the mean and std of soft and binary volumes
+    final_volumes_df = pd.DataFrame(columns=["subject", "soft_volume_mean", "soft_volume_std", "binary_volume_mean", "binary_volume_std"])
+    subjects = volumes_df['subject'].unique()
+    for sub in subjects:
+        sub_volumes = volumes_df[volumes_df['subject'] == sub]
+        soft_volume_mean = sub_volumes['soft_volume'].mean()
+        soft_volume_std = sub_volumes['soft_volume'].std()
+        binary_volume_mean = sub_volumes['binary_volume'].mean()
+        binary_volume_std = sub_volumes['binary_volume'].std()
+        # Update the final volumes dataframe
+        new_line = pd.DataFrame({"subject": [sub],
+                                 "soft_volume_mean": [soft_volume_mean],
+                                 "soft_volume_std": [soft_volume_std],
+                                 "binary_volume_mean": [binary_volume_mean],
+                                 "binary_volume_std": [binary_volume_std]})
+        final_volumes_df = pd.concat([final_volumes_df, new_line], ignore_index=True)
+
+    # We then print the avg difference in stds between soft and binary volumes
+    diff_stds = final_volumes_df['soft_volume_std'] - final_volumes_df['binary_volume_std']
+    avg_diff_stds = diff_stds.mean()
+    print("VOLUMES:")
+    print("Average volumes for soft segmentations:", final_volumes_df['soft_volume_mean'].mean())
+    print("Average volumes for binary segmentations:", final_volumes_df['binary_volume_mean'].mean())
+    print("STD:")
+    print("Average std for soft volumes:", final_volumes_df['soft_volume_std'].mean())
+    print("Average std for binary volumes:", final_volumes_df['binary_volume_std'].mean())
+    print("DIFF STD:")
+    print(f"Average difference in stds between soft and binary volumes: {avg_diff_stds}")
+
+    # We check if the std lists are significantly different using a Wilcoxon test
+    print("STAT TEST:")
+    stat, p_value = wilcoxon(final_volumes_df['soft_volume_std'], final_volumes_df['binary_volume_std'])
+    print("Wilcoxon test between soft and binary volume stds:")
+    print(f"Statistic: {stat}, p-value: {p_value}")
 
 
 if __name__ == "__main__":
