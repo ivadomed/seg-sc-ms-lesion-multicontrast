@@ -177,6 +177,46 @@ def main():
     f1_score = 2 * (precision * recall) / (precision + recall) if (precision + recall) > 0 else 0
     logger.info(f"Test set - Precision: {precision:.4f}, Recall: {recall:.4f}, F1 Score: {f1_score:.4f}")
 
+    # We want to build a per-subject results dictionary
+    results = {}
+    for subject in subjects:
+        results[subject] = {'TP': [], 'FP': [], 'FN': []}
+        if subject not in test_subjects:
+            subject_df = train_df[train_df['subject'] == subject]
+        else:
+            subject_df = test_df[test_df['subject'] == subject]
+        if subject_df.empty:
+            continue
+        X_subj = subject_df[feature_cols]
+        y_subj = subject_df['label']
+        y_subj_pred = model.predict(X_subj)
+        for true_label, pred_label in zip(y_subj, y_subj_pred):
+            if true_label == 1 and pred_label == 1:
+                results[subject]['TP'].append(1)
+                results[subject]['FP'].append(0)
+                results[subject]['FN'].append(0)
+            elif true_label == 0 and pred_label == 1:
+                results[subject]['TP'].append(0)
+                results[subject]['FP'].append(1)
+                results[subject]['FN'].append(0)
+            elif true_label == 1 and pred_label == 0:
+                results[subject]['TP'].append(0)
+                results[subject]['FP'].append(0)
+                results[subject]['FN'].append(1)
+            else:
+                results[subject]['TP'].append(0)
+                results[subject]['FP'].append(0)
+                results[subject]['FN'].append(0)
+        # Sum up the counts
+        results[subject]['TP'] = sum(results[subject]['TP'])
+        results[subject]['FP'] = sum(results[subject]['FP'])
+        results[subject]['FN'] = sum(results[subject]['FN'])
+
+    # Save the results file
+    output_results_path = os.path.join(output_folder, 'lesion_mapping_XGB_results.json')
+    with open(output_results_path, 'w') as f:
+        json.dump(results, f, indent=4)
+
     # save the model
     output_model_path = os.path.join(output_folder, 'lesion_mapping_XGB_model.pkl')
     with open(output_model_path, 'wb') as f:
