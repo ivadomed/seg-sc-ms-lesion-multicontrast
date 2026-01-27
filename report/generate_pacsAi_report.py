@@ -3,7 +3,8 @@ This script takes as input longitudinal images and the corresponding lesion segm
 
 Input: 
     -i: folder containing longitudinal images
-    -s: folder containing corresponding lesion segmentations
+    -l: folder containing corresponding lesion segmentations
+    -sc: folder containing corresponding spinal cord segmentations
     -o: output folder to save the report
 
 Author: Pierre-Louis Benveniste
@@ -15,14 +16,16 @@ from pathlib import Path
 import nibabel as nib
 import pandas as pd
 import matplotlib.pyplot as plt
-from PIL import Image
+from PIL import Image, ImageEnhance
 from datetime import datetime
+from scipy.ndimage import label
 
 
 def parse_arguments():
     parser = argparse.ArgumentParser(description="Compute lesion change report from longitudinal images and segmentations.")
     parser.add_argument('-i', '--images', required=True, help='Folder containing longitudinal images')
-    parser.add_argument('-s', '--segmentations', required=True, help='Folder containing corresponding lesion segmentations')
+    parser.add_argument('-l', '--lesion-seg', required=True, help='Folder containing corresponding lesion segmentations')
+    parser.add_argument('-s', '--sc-seg', required=True, help='Folder containing corresponding spinal cord segmentations')
     parser.add_argument('-o', '--output', required=True, help='Output folder to save the report')
     return parser.parse_args()
 
@@ -51,6 +54,20 @@ def compute_lesion_volume(seg_file):
     return lesion_volume
 
 
+def count_lesions(seg_file):
+    """
+    Count the number of distinct lesions in the segmentation file using connected component analysis.
+    """
+    # Load the lesion mask
+    lesion = nib.load(seg_file)
+    lesion_data = lesion.get_fdata()
+
+    # Label connected components (with connectivity=1 for 26-connectivity in 3D)
+    labeled_array, num_features = label(lesion_data, structure=np.ones((3,3,3)))
+
+    return num_features
+
+
 def screenshot_seg(seg_file, img_file, img_date, output_folder):
     """
     Create a screenshot of the middle slice of the segmentation in the sagittal plane.
@@ -73,10 +90,8 @@ def screenshot_seg(seg_file, img_file, img_date, output_folder):
     # Get the center of gravity of the lesion mask
     coords = np.argwhere(lesion_data > 0)
     cog = np.mean(coords, axis=0).astype(int)
-    print(img_date)
-    print(f"Center of gravity of lesion: {cog}")
 
-    if img_date == '20150924':
+    if img_date != '20160429':
         cog += 1  # small hack to adjust for misalignment in this specific case
 
     # Get orientation of the image
@@ -116,6 +131,13 @@ def screenshot_seg(seg_file, img_file, img_date, output_folder):
     a_norm = np.clip((i_slice - vmin) / (vmax - vmin) * 255, 0, 255).astype(np.uint8)
     # Convert to PIL RGB
     anat_pil = Image.fromarray(a_norm).convert("RGB")
+    # 3. USE PIL ENHANCERS (Optional extra "oomph")
+    # Increase Contrast (1.0 is original, 1.2 is 20% more)
+    contrast_enhancer = ImageEnhance.Contrast(anat_pil)
+    anat_pil = contrast_enhancer.enhance(1.4)
+    # Increase Brightness/Exposure
+    bright_enhancer = ImageEnhance.Brightness(anat_pil)
+    anat_pil = bright_enhancer.enhance(1.5)
 
     # 5. Process Segmentation Slice (Binary -> Red RGB)
     # Create an empty RGB array
@@ -179,8 +201,12 @@ def generate_html_report(df, screenshots, output_folder):
             </div>
 
             <div class="graph-container">
-                <h2>Volume Evolution Graph</h2>
+                <h2>Total lesion volume across time</h2>
                 <img src="lesion_volume_over_time.png">
+            </div>
+            <div class="graph-container">
+                <h2>Number of lesions across time</h2>
+                <img src="num_lesions_over_time.png">
             </div>
         </div>
     </body>
@@ -204,21 +230,48 @@ def main():
 
     # Get all images
     images = list(Path(args.images).glob('*.nii.gz'))
+    images = [str(img) for img in images if "flatten" not in str(img)]  # Exclude already flattened images  
     # Find corresponding segmentation files
-    segmentations = []
+    lesion_segs = []
+    sc_segs = []
     for img in images:
-        seg_file = os.path.join(args.segmentations, str(img).split("/")[-1].replace('.nii.gz', '_lesion-seg.nii.gz'))
-        if os.path.exists(seg_file):
-            segmentations.append(seg_file)
+        lesion_seg_file = os.path.join(args.lesion_seg, str(img).split("/")[-1].replace('.nii.gz', '_lesion-seg.nii.gz'))
+        if os.path.exists(lesion_seg_file):
+            lesion_segs.append(lesion_seg_file)
         else:
-            raise FileNotFoundError(f"Segmentation file not found {seg_file}")
+            raise FileNotFoundError(f"Segmentation file not found {lesion_seg_file}")
+        sc_seg_file = os.path.join(args.sc_seg, str(img).split("/")[-1].replace('.nii.gz', '_sc-seg.nii.gz'))
+        if os.path.exists(sc_seg_file):
+            sc_segs.append(sc_seg_file)
+        else:
+            raise FileNotFoundError(f"Spinal cord segmentation file not found {sc_seg_file}")
+        
+    ## Now we improve the sagittal view by making sure the SC is flattened on the IS axis
+    for img, lesion_seg, sc_seg in zip(images, lesion_segs, sc_segs):
+        # Flatten the image
+        assert os.system(f"sct_flatten_sagittal -i {img} -s {sc_seg}")==0, f"Error flattening image {img}"
+        # We convert the lesion segmentations to float first to avoid interpolation issues
+        lesion_seg_float = lesion_seg.replace('.nii.gz', '_float.nii.gz')
+        assert os.system(f"sct_image -i {lesion_seg} -o {lesion_seg_float} -type float32")==0, f"Error converting lesion segmentation {lesion_seg} to float"
+        lesion_data = nib.load(lesion_seg_float).get_fdata()
+        print(lesion_data.dtype)
+        # Flatten the lesion seg
+        assert os.system(f"sct_flatten_sagittal -i {lesion_seg_float} -s {sc_seg}")==0, f"Error flattening lesion segmentation {lesion_seg_float}"
+        # Then we need to binarize the lesion segmentation again (threshold at 0.5)
+        assert os.system(f"sct_maths -i {lesion_seg_float.replace('.nii.gz', '_flatten.nii.gz')} -o {lesion_seg_float.replace('.nii.gz', '_flatten.nii.gz')} -bin 0.5")==0, f"Error binarizing lesion segmentation {lesion_seg_float.replace('.nii.gz', '_flatten.nii.gz')}"
+        
+    # Update the images and segmentations lists to point to the flattened versions
+    images = [str(img).replace('.nii.gz', '_flatten.nii.gz') for img in images]
+    lesion_segs = [str(seg).replace('.nii.gz', '_float_flatten.nii.gz') for seg in lesion_segs]
 
     lesion_changes_df = []
     path_screenshots = []
 
-    for seg_file, img in zip(segmentations, images):
+    for seg_file, img in zip(lesion_segs, images):
         # Compute lesion total volume
         lesion_total_volume = compute_lesion_volume(seg_file)
+        # Number of lesions
+        num_lesions = count_lesions(seg_file)
 
         # Extract imaging date
         img_date = seg_file.split("/")[-1].split("_")[1].replace('ses-', '')
@@ -227,7 +280,8 @@ def main():
             'image_file': str(img),
             'segmentation_file': seg_file,
             'imaging_date': img_date,
-            'lesion_total_volume': lesion_total_volume
+            'lesion_total_volume': lesion_total_volume,
+            'num_lesions': num_lesions
         })
 
         # For each timepoint we also want to have a screen shot of the middle slice (of the segmentation) in the sagittal plane
@@ -245,13 +299,27 @@ def main():
     # Plot a graph of the lesion volume over time
     plt.figure(figsize=(10, 6))
     plt.plot(lesion_changes_df['imaging_date'], lesion_changes_df['lesion_total_volume'], marker='o')
-    plt.title('Lesion Volume Over Time')
+    plt.title('Total lesion volume across time')
     plt.xlabel('Imaging Date')
-    plt.ylabel('Lesion Total Volume (mm³)')
+    plt.ylabel('Total Lesion Volume (mm³)')
     # Max and min y limit with 20% margin
     plt.ylim(bottom=lesion_changes_df['lesion_total_volume'].min() * 0.8, top=lesion_changes_df['lesion_total_volume'].max() * 1.2)
     plt.grid()
     plt.savefig(os.path.join(args.output, 'lesion_volume_over_time.png'))
+    plt.close()
+
+    # Plot a graph of the number of lesions over time
+    plt.figure(figsize=(10, 6))
+    plt.plot(lesion_changes_df['imaging_date'], lesion_changes_df['num_lesions'], marker='o', color='orange')
+    plt.title('Number of lesions across time')
+    plt.xlabel('Imaging Date')
+    plt.ylabel('Number of Lesions')
+    # Max and min y limit with 20% margin
+    plt.ylim(bottom=lesion_changes_df['num_lesions'].min() - 1, top=lesion_changes_df['num_lesions'].max() + 1)
+    # Grid must be intervals of 1
+    plt.yticks(range(int(lesion_changes_df['num_lesions'].min()) - 1, int(lesion_changes_df['num_lesions'].max()) + 2))
+    plt.grid()
+    plt.savefig(os.path.join(args.output, 'num_lesions_over_time.png'))
     plt.close()
 
     # Generate HTML report
