@@ -73,6 +73,11 @@ def screenshot_seg(seg_file, img_file, img_date, output_folder):
     # Get the center of gravity of the lesion mask
     coords = np.argwhere(lesion_data > 0)
     cog = np.mean(coords, axis=0).astype(int)
+    print(img_date)
+    print(f"Center of gravity of lesion: {cog}")
+
+    if img_date == '20150924':
+        cog += 1  # small hack to adjust for misalignment in this specific case
 
     # Get orientation of the image
     orientation = nib.aff2axcodes(lesion.affine)
