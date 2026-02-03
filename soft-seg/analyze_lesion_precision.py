@@ -23,7 +23,7 @@ from scipy import stats
 import os
 import argparse
 import sys
-
+from loguru import logger
 
 def parse_arguments():
     parser = argparse.ArgumentParser(description="Analyze lesion volume precision from CSV data.")
@@ -39,12 +39,18 @@ def analyze_precision(csv_path, output_folder):
     # Load the CSV file
     print(f"Loading data from {csv_path}...")
     df = pd.read_csv(csv_path)
+
+    # We also want to save all results to log file
+    log_path = os.path.join(output_folder, "precision_analysis.log")
+    logger.add(log_path, format="{time} {level} {message}", level="INFO")
+    logger.info(f"Loaded data from {csv_path} with {len(df)} entries.")
     
     # Group by subject and collect non-null values
     results = []
     
     subjects = df['subject'].unique()
-    print(f"Found {len(subjects)} subjects.")
+    logger.info(f"Found {len(subjects)} subjects for analysis.")
+
     
     for sub in subjects:
         sub_df = df[df['subject'] == sub]
@@ -57,7 +63,7 @@ def analyze_precision(csv_path, output_folder):
         n_binary = len(binary_vols)
         
         if n_soft < 2 or n_binary < 2:
-            print(f"Skipping {sub}: Not enough data (Soft: {n_soft}, Binary: {n_binary})")
+            logger.info(f"Skipping {sub}: Not enough data (Soft: {n_soft}, Binary: {n_binary})")
             continue
             
         # Calculate stats
@@ -84,8 +90,8 @@ def analyze_precision(csv_path, output_folder):
     results_df = pd.DataFrame(results)
     
     # --- Statistical Comparison ---
-    print("\n--- Summary Statistics ---")
-    print(results_df[['Soft_CV', 'Binary_CV', 'Soft_STD', 'Binary_STD']].describe())
+    logger.info("\n--- Summary Statistics ---")
+    logger.info(results_df[['Soft_CV', 'Binary_CV', 'Soft_STD', 'Binary_STD']].describe())
     
     # Paired T-test
     t_stat_cv, p_val_cv = stats.ttest_rel(results_df['Soft_CV'], results_df['Binary_CV'])
@@ -102,7 +108,7 @@ def analyze_precision(csv_path, output_folder):
         f"Paired t-test p-value (CV): {p_val_cv}\n"
         f"Wilcoxon p-value (CV): {p_w_cv}\n"
     )
-    print(summary_msg)
+    logger.info(summary_msg)
 
     # --- Plotting ---
     plt.style.use('seaborn-v0_8-whitegrid')
@@ -119,7 +125,7 @@ def analyze_precision(csv_path, output_folder):
     plt.ylabel('Coefficient of Variation (%)')
     plt.tight_layout()
     plt.savefig(os.path.join(output_folder, 'precision_boxplot.png'))
-    print(f"Saved {os.path.join(output_folder, 'precision_boxplot.png')}")
+    logger.info(f"Saved {os.path.join(output_folder, 'precision_boxplot.png')}")
 
     # 2. Scatter plot
     plt.figure(figsize=(8, 8))
@@ -137,7 +143,7 @@ def analyze_precision(csv_path, output_folder):
     plt.legend()
     plt.tight_layout()
     plt.savefig(os.path.join(output_folder, 'precision_scatter.png'))
-    print(f"Saved {os.path.join(output_folder, 'precision_scatter.png')}")
+    logger.info(f"Saved {os.path.join(output_folder, 'precision_scatter.png')}")
 
 if __name__ == "__main__":
     # Parse the arguments
