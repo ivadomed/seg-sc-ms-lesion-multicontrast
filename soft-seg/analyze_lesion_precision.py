@@ -61,10 +61,6 @@ def analyze_precision(csv_path, output_folder):
         # We expect ~24 values.
         n_soft = len(soft_vols)
         n_binary = len(binary_vols)
-        
-        if n_soft < 2 or n_binary < 2:
-            logger.info(f"Skipping {sub}: Not enough data (Soft: {n_soft}, Binary: {n_binary})")
-            continue
             
         # Calculate stats
         soft_mean = np.mean(soft_vols)

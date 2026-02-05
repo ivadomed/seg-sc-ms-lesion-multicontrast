@@ -43,13 +43,7 @@ def compute_lesion_volume(lesion_mask_path):
     return lesion_volume, voxel_volume
 
 
-def main():
-
-    # Parse arguments
-    args = parse_args()
-    input_folder = args.input_folder
-    output_folder = args.output_folder
-
+def main_volume(input_folder, output_folder):
     # Create output folder if it doesn't exist
     os.makedirs(output_folder, exist_ok=True)
 
@@ -80,6 +74,13 @@ def main():
     volumes_csv_path = os.path.join(output_folder, "lesion_volumes.csv")
     volumes_df.to_csv(volumes_csv_path, index=False)
 
+    return volumes_csv_path
+
 
 if __name__ == "__main__":
-    main()
+    # Parse arguments
+    args = parse_args()
+    input_folder = args.input_folder
+    output_folder = args.output_folder
+
+    _ =main_volume(input_folder, output_folder)

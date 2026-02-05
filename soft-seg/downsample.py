@@ -31,34 +31,29 @@ def apply_downsampling(input_path, output_path, factors):
     
 
 def downsample_image(input_image, output_folder):
-    
     # Create output folder if it doesn't exist
     os.makedirs(output_folder, exist_ok=True)
     
-    downsample_factors = [(0.9, 0.9, 0.9), (0.8, 0.8, 0.8), (0.7, 0.7, 0.7), (0.6, 0.6, 0.6), (0.5, 0.5, 0.5), (0.4, 0.4, 0.4),
-                          (0.9, 0.9, 1.0), (0.8, 0.8, 1.0), (0.7, 0.7, 1.0), (0.6, 0.6, 1.0), (0.5, 0.5, 1.0), (0.4, 0.4, 1.0),
-                          (0.9, 1.0, 0.9), (0.8, 1.0, 0.8), (0.7, 1.0, 0.7), (0.6, 1.0, 0.6), (0.5, 1.0, 0.5), (0.4, 1.0, 0.4),
-                          (1.0, 0.9, 0.9), (1.0, 0.8, 0.8), (1.0, 0.7, 0.7), (1.0, 0.6, 0.6), (1.0, 0.5, 0.5), (1.0, 0.4, 0.4)
+    downsample_factors = [(0.9, 0.9, 0.9), (0.8, 0.8, 0.8), (0.7, 0.7, 0.7), (0.6, 0.6, 0.6), (0.5, 0.5, 0.5),
+                          (0.9, 0.9, 1.0), (0.8, 0.8, 1.0), (0.7, 0.7, 1.0), (0.6, 0.6, 1.0), (0.5, 0.5, 1.0),
+                          (0.9, 1.0, 0.9), (0.8, 1.0, 0.8), (0.7, 1.0, 0.7), (0.6, 1.0, 0.6), (0.5, 1.0, 0.5),
+                          (1.0, 0.9, 0.9), (1.0, 0.8, 0.8), (1.0, 0.7, 0.7), (1.0, 0.6, 0.6), (1.0, 0.5, 0.5),
     ]
     
+    image_name = input_image.split('/')[-1].replace('.nii.gz', '')
     for factor in downsample_factors:
-        output_image = os.path.join(output_folder, f"downsampled_{factor[0]}x{factor[1]}x{factor[2]}.nii.gz")
+        output_image = os.path.join(output_folder, f"{image_name}_downsampled_{factor[0]}x{factor[1]}x{factor[2]}.nii.gz")
         apply_downsampling(input_image, output_image, factor)
         print(f"Saved downsampled image at: {output_image}")
 
-def main():
-    args = parse_args()
-    
-    input_msd = args.input
-    output_folder = args.output
-
+def main_downsample(input_msd, output_folder):
     # Build output folder
     os.makedirs(output_folder, exist_ok=True)
 
     # Open the msd file
     with open(input_msd, 'r') as f:
         msd_data = json.load(f)
-    images = msd_data['test']
+    images = msd_data['images']
 
     # Iterate through each image in the msd file
     for image in tqdm(images, desc="Downsampling images"):
@@ -69,8 +64,13 @@ def main():
         os.makedirs(output_folder_image, exist_ok=True)
         # Downsample the image
         downsample_image(input_msd_file, output_folder_image)
+        
     return None
 
 
 if __name__ == "__main__":
-    main()
+    args = parse_args()
+    input_msd = args.input
+    output_folder = args.output
+
+    main_downsample(input_msd, output_folder)

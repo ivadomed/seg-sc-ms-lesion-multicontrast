@@ -24,18 +24,14 @@ def parse_args():
     return parser.parse_args()
 
 
-def main():
-    args = parse_args()
-    input_folder = args.input_folder
-    output_folder = args.output_folder
-    high_thresh = args.high_thresh
+def main_thresholding(input_folder, output_folder, high_thresh=False):
     # Build output folder
     os.makedirs(output_folder, exist_ok=True)
 
     thresholds = [0.1, 1e-2, 1e-3, 1e-4, 1e-5, 1e-6, 1e-7, 1e-8, 1e-9]
 
     if high_thresh:
-        thresholds = [0.9, 0.8, 0.7, 0.6, 0.5, 0.4, 0.3, 0.2]
+        thresholds = [0.9, 0.8, 0.7, 0.65, 0.6, 0.55, 0.5, 0.4, 0.3, 0.2]
 
     # For each threshold, create a new folder and threshold the soft segmentations
     for thresh in tqdm(thresholds, desc="Threshold levels"):
@@ -65,4 +61,9 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    args = parse_args()
+    input_folder = args.input_folder
+    output_folder = args.output_folder
+    high_thresh = args.high_thresh
+    
+    main_thresholding(input_folder, output_folder, high_thresh)

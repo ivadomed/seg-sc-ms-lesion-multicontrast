@@ -29,11 +29,7 @@ def run_segmentation(input_image, output_image, soft_seg=False):
     assert os.system(f"SCT_USE_GPU=1 sct_deepseg lesion_ms -i {input_image} -o {output_image} {soft_ms_lesion_flag}") == 0, "Error in lesion segmentation"
 
 
-def main():
-    args = parse_args()
-    input_folder = args.input_folder
-    output_folder = args.output_folder
-    
+def main_run_pred(input_folder, output_folder):
     # Create output folder if it doesn't exist
     os.makedirs(output_folder, exist_ok=True)
     
@@ -58,4 +54,8 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    args = parse_args()
+    input_folder = args.input_folder
+    output_folder = args.output_folder
+
+    main_run_pred(input_folder, output_folder)
