@@ -3,6 +3,7 @@ This script runs the full experiment.
 
 Input:
     -i: Path to input msd file
+    --model-path: Path to the nnUNet model to use for prediction
     -o: Path to output results folder
 
 Author: Pierre-Louis Benveniste
@@ -10,7 +11,7 @@ Author: Pierre-Louis Benveniste
 import os
 import argparse
 from downsample import main_downsample
-from run_pred import main_run_pred
+from run_pred_without_sct import main_run_pred
 from thresholding import main_thresholding
 from compute_volumes import main_volume
 from analyze_lesion_precision import analyze_precision
@@ -19,6 +20,7 @@ from analyze_lesion_precision import analyze_precision
 def parse_args():
     parser = argparse.ArgumentParser(description="Run full experiment: prediction, thresholding, downsampling.")
     parser.add_argument("-i", "--input-msd", type=str, required=True, help="Path to input msd file")
+    parser.add_argument("--path-model", type=str, required=True, help="Path to the nnUNet model to use for prediction")
     parser.add_argument("-o", "--output_folder", type=str, required=True, help="Path to output results folder")
     return parser.parse_args()
 
@@ -28,6 +30,7 @@ def main_full_experiment():
     args = parse_args()
     input_msd = args.input_msd
     output_folder = args.output_folder
+    path_model = args.path_model
 
     # Build output folder
     os.makedirs(output_folder, exist_ok=True)
@@ -37,14 +40,14 @@ def main_full_experiment():
     downsample_output_folder = os.path.join(output_folder, "downsampled_images")
     os.makedirs(downsample_output_folder, exist_ok=True)
     print("Starting downsampling of images...")
-    main_downsample(input_msd, downsample_output_folder)
+    # main_downsample(input_msd, downsample_output_folder)
 
     # Step 2: Run predictions
     ## Build prediction output folder
     prediction_output_folder = os.path.join(output_folder, "predictions")
     os.makedirs(prediction_output_folder, exist_ok=True)
     print("Starting predictions...")
-    main_run_pred(downsample_output_folder, prediction_output_folder)
+    main_run_pred(downsample_output_folder, prediction_output_folder, path_model)
 
     # Step 3: Thresholding
     ## Build thresholding output folder
