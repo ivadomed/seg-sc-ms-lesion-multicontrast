@@ -4,6 +4,7 @@ In this script, we run predictions without using SCT so that it is faster.
 Input:
     -i: Path to input folder containing images
     --path-model: Path to the nnUNet model to use for prediction
+    --five-folds: Whether to use 5-folds ensemble for prediction (instead of just fold 2 which is the best fold on the validation set)
     -o: Path to output folder to save predictions
 
 Author: Pierre-Louis Benveniste
@@ -29,6 +30,7 @@ def parse_args():
     parser = argparse.ArgumentParser(description="Run lesion segmentation on all images in a folder.")
     parser.add_argument("-i", "--input_folder", type=str, required=True, help="Path to input folder containing images")
     parser.add_argument("--path-model", type=str, required=True, help="Path to the nnUNet model to use for prediction")
+    parser.add_argument("--five-folds", action="store_true", help="Whether to use 5-folds ensemble for prediction (instead of just fold 2 which is the best fold on the validation set)")
     parser.add_argument("-o", "--output_folder", type=str, required=True, help="Path to output folder to save predictions")
     return parser.parse_args()
 
@@ -47,10 +49,12 @@ def load_trainer_class_if_available(path_model):
     return None
 
 
-def initialize_predictor(path_model):
+def initialize_predictor(path_model, five_folds=False):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     # We load the model
     folds = [2]
+    if five_folds:
+        folds = [0, 1, 2, 3, 4]
     predictor = nnUNetPredictor(
         tile_step_size=0.5,  # changing it from 0.5 to 0.9 makes inference faster
         use_gaussian=True,  # applies gaussian noise and gaussian blur
@@ -71,14 +75,14 @@ def initialize_predictor(path_model):
     return predictor
 
 
-def main_run_pred(input_folder, output_folder, path_model):
+def main_run_pred(input_folder, output_folder, path_model, five_folds=False):
     # Create output folder if it doesn't exist
     os.makedirs(output_folder, exist_ok=True)
     
     input_images = list(Path(input_folder).rglob("*.nii.gz"))
     input_images = [str(img) for img in input_images]
 
-    predictor = initialize_predictor(path_model)
+    predictor = initialize_predictor(path_model, five_folds=five_folds)
 
     # Now for each image, we run the prediction
     for img in tqdm(input_images, desc="Running lesion segmentation"):
@@ -94,6 +98,7 @@ def main_run_pred(input_folder, output_folder, path_model):
         # Run nnUNet prediction
         data = img_in.data.transpose([2, 1, 0])
         data = np.expand_dims(data, axis=0).astype(np.float32)
+        
         pred = predictor.predict_single_npy_array(
             input_image=data,
             # The spacings also have to be reversed to match nnUNet's conventions.
@@ -149,5 +154,6 @@ if __name__ == "__main__":
     input_folder = args.input_folder
     output_folder = args.output_folder
     path_model = args.path_model
+    five_folds = args.five_folds
 
-    main_run_pred(input_folder, output_folder, path_model)
+    main_run_pred(input_folder, output_folder, path_model, five_folds)

@@ -25,6 +25,7 @@ import argparse
 import sys
 from loguru import logger
 
+
 def parse_arguments():
     parser = argparse.ArgumentParser(description="Analyze lesion volume precision from CSV data.")
     parser.add_argument("-i", "--input", dest="csv_file", required=True, help="Path to the input CSV file.")
@@ -42,6 +43,9 @@ def analyze_precision(csv_path, output_folder):
 
     # We also want to save all results to log file
     log_path = os.path.join(output_folder, "precision_analysis.log")
+    ## remove existing log file if it exists
+    if os.path.exists(log_path):
+        os.remove(log_path)
     logger.add(log_path, format="{time} {level} {message}", level="INFO")
     logger.info(f"Loaded data from {csv_path} with {len(df)} entries.")
     
@@ -95,14 +99,19 @@ def analyze_precision(csv_path, output_folder):
 
     # Wilcoxon (non-parametric, robust to outliers)
     w_stat_cv, p_w_cv = stats.wilcoxon(results_df['Soft_CV'], results_df['Binary_CV'])
+    w_stat_sd, p_w_sd = stats.wilcoxon(results_df['Soft_STD'], results_df['Binary_STD'])
 
     summary_msg = (
         f"\nComparison (N={len(results_df)}):\n"
+        f"Mean Soft STD: {results_df['Soft_STD'].mean():.2f} ml\n"
+        f"Mean Binary STD: {results_df['Binary_STD'].mean():.2f} ml\n"
         f"Mean CV Soft: {results_df['Soft_CV'].mean():.2f}%\n"
         f"Mean CV Binary: {results_df['Binary_CV'].mean():.2f}%\n"
         f"CV Reduction with Soft: {results_df['Binary_CV'].mean() - results_df['Soft_CV'].mean():.2f}%\n"
         f"Paired t-test p-value (CV): {p_val_cv}\n"
         f"Wilcoxon p-value (CV): {p_w_cv}\n"
+        f"Paired t-test p-value (STD): {p_val_sd}\n"
+        f"Wilcoxon p-value (STD): {p_w_sd}"
     )
     logger.info(summary_msg)
 
@@ -140,6 +149,9 @@ def analyze_precision(csv_path, output_folder):
     plt.tight_layout()
     plt.savefig(os.path.join(output_folder, 'precision_scatter.png'))
     logger.info(f"Saved {os.path.join(output_folder, 'precision_scatter.png')}")
+
+    # Clear logger
+    logger.remove()
 
 if __name__ == "__main__":
     # Parse the arguments
