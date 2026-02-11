@@ -1,5 +1,5 @@
 """
-This script performs temperature scaling on the soft segmentations to calibrate the predicted probabilities.
+This script performs isotonic regression on the soft segmentations to calibrate the predicted probabilities.
 
 Input:
     --msd: Path to the MSD JSON file describing the dataset
@@ -32,6 +32,7 @@ from image import Image, get_orientation
 import numpy as np
 import torch.nn.functional as F
 import pandas as pd
+from sklearn.isotonic import IsotonicRegression
 import nilearn.image
 
 
@@ -140,8 +141,8 @@ def main_temperature_scaling(input_msd, path_model, output_folder, smaller_chang
     np.random.shuffle(labels)
 
     # Select images for temperature scaling
-    calib_images = images[:200]
-    calib_labels = labels[:200]
+    calib_images = images[:20]
+    calib_labels = labels[:20]
     eval_images = images[200:]
     eval_labels = labels[200:]
 
@@ -156,9 +157,6 @@ def main_temperature_scaling(input_msd, path_model, output_folder, smaller_chang
 
     # initialize the model
     predictor = initialize_predictor(path_model, five_folds=False)
-
-    # List of temperatures to evaluate
-    temperatures = [0.5, 1.0, 2.0, 5.0, 10.0, 20.0, 30.0, 50.0, 100.0]
 
     # Downsampling factors to evaluate
     downsampling_factors = [(0.9, 0.9, 0.9), (0.8, 0.8, 0.8), (0.7, 0.7, 0.7), (0.6, 0.6, 0.6), (0.5, 0.5, 0.5),
@@ -189,76 +187,55 @@ def main_temperature_scaling(input_msd, path_model, output_folder, smaller_chang
         if orig_orientation != model_orientation:
             img_in.change_orientation(model_orientation)
             label_in.change_orientation(model_orientation)
+        
+        data = img_in.data.transpose([2, 1, 0])
+        label_data = label_in.data.transpose([2, 1, 0])
+        data = np.expand_dims(data, axis=0).astype(np.float32)
+        label_data = np.expand_dims(label_data, axis=0).astype(np.float32)
 
-        for down_factor in downsampling_factors:
-            print(f"Downsampling factor: {down_factor}")
-            # We downsample the image: factor 2 means going from 1mm to 2mm spacing
-            resamp_img = resample_img(img_in, down_factor, interpolation='linear')
+        _, logits = predictor.predict_single_npy_array(
+            input_image=data,
+            # The spacings also have to be reversed to match nnUNet's conventions.
+            image_properties={'spacing': img_in.dim[6:3:-1]},
+            # Save the probability maps if specified
+            save_or_return_probabilities=True,
+            # If using a model ensemble, return the logits per fold so we can average them ourselves
+            return_logits_per_fold=False, 
+            return_logits = True
+        )
+        # Convert logits to torch tensor
+        logits = torch.from_numpy(logits)
 
-            # we downsample the label as well, but with nearest neighbor interpolation to avoid creating new classes
-            resamp_label = resample_img(label_in, down_factor, interpolation='nearest')
+        print(np.unique(label_data))
 
-            # prepare the image for prediction
-            data = resamp_img.data.transpose([2, 1, 0])
-            data = np.expand_dims(data, axis=0).astype(np.float32)
+        # Convert logits to probabilities using softmax
+        probs = torch.nn.functional.softmax(logits, dim=0)
+        probs = probs[1].numpy()  # Get probability for lesion class
 
-            _, logits = predictor.predict_single_npy_array(
-                input_image=data,
-                # The spacings also have to be reversed to match nnUNet's conventions.
-                image_properties={'spacing': resamp_img.dim[6:3:-1]},
-                # Save the probability maps if specified
-                save_or_return_probabilities=True,
-                # If using a model ensemble, return the logits per fold so we can average them ourselves
-                return_logits_per_fold=False, 
-                return_logits = True
-            )
-            # Convert logits to torch tensor
-            logits = torch.from_numpy(logits)
+        # Flatten predictions and labels for isotonic regression
+        pred_flat = probs.flatten()
+        label_flat = label_data.flatten()
 
-            for temp in temperatures:
+        # Fit isotonic regression
+        iso_reg = IsotonicRegression(out_of_bounds='clip')
+        iso_reg.fit(pred_flat, label_flat)
 
-                # Apply Temperature Scaling: Logits / T
-                scaled_logits = logits / temp
-                # Convert logits to probabilities using Softmax
-                calibrated_probs = F.softmax(scaled_logits, dim=0)
+        # Apply isotonic regression to calibrate probabilities
+        calibrated_probs = iso_reg.predict(pred_flat)
+        calibrated_probs = calibrated_probs.reshape(probs.shape)
 
-                # Ectract the probabilities for the foreground class (assuming binary segmentation)
-                foreground_probs = calibrated_probs[1, :, :, :].cpu().numpy()
-                # Transpose back
-                foreground_probs = foreground_probs.transpose([2, 1, 0])
+        # Compute dice score at threshold 0.5
+        binary_pred = (calibrated_probs > 0.5).astype(np.float32)
+        binary_label = resamp_label.data.astype(np.float32)
+        dice = dice_score(binary_pred, binary_label)
 
-                # Compute lesion total volume in mm3
-                voxel_volume = np.prod(resamp_img.dim[6:3:-1])  # in mm^3
-                foreground_probs[foreground_probs < 0.5] = 0
-                lesion_total_volume_soft = foreground_probs.sum() * voxel_volume
-
-                # Compute binary lesion volume for comparison
-                bin_pred = foreground_probs.copy()
-                bin_pred[bin_pred >= 0.5] = 1
-                bin_pred[bin_pred < 0.5] = 0
-                lesion_total_volume_binary = bin_pred.sum() * voxel_volume
-                
-                # Now we compute the Dice score at a threshold of 0.5
-                # We convert the probabilities to binary predictions using a threshold of 0.5
-                binary_preds = (foreground_probs >= 0.5).astype(np.uint8)
-                # We compute the real lesion volume in mm3 using the ground truth label
-                gt_lesion_volume = (resamp_label.data >= 0.5).sum() * voxel_volume
-                # We compute the Dice score between the binary predictions and the ground truth label
-                dice = dice_score(binary_preds, resamp_label.data.astype(np.uint8))
-
-                # Add everything to the results dataframe
-                new_line = pd.DataFrame({"subject": [subject], "resamp_factor": [down_factor], "temperature": [temp], "dice_at_0.5": [dice],
-                                         "lesion_total_volume_soft": [lesion_total_volume_soft], "lesion_total_volume_binary": [lesion_total_volume_binary],
-                                         "gt_lesion_volume": [gt_lesion_volume]})
-                results_df = pd.concat([results_df, new_line], ignore_index=True)
-
-        # Save the results dataframe to csv
-        results_df.to_csv(os.path.join(output_folder, "temperature_scaling_results.csv"), index=False)
-        print(f"Saved results to {os.path.join(output_folder, 'temperature_scaling_results.csv')}")
-
-    # Save the results dataframe to csv
-    results_df.to_csv(os.path.join(output_folder, "temperature_scaling_results.csv"), index=False)
-    print(f"Saved results to {os.path.join(output_folder, 'temperature_scaling_results.csv')}")
+        # Store results
+        results_df = pd.concat([results_df, pd.DataFrame({
+            "subject": [subject],
+            "resamp_factor": [down_factor],
+            "temperature": [None],  # Not applicable for isotonic regression
+            "dice_at_0.5": [dice]
+        })], ignore_index=True)
 
 
 if __name__ == "__main__":
