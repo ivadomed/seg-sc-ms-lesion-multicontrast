@@ -159,7 +159,6 @@ def main_temperature_scaling(input_msd, path_model, output_folder):
     temperatures = [0.5, 1.0, 2.0, 5.0, 10.0, 20.0, 30.0, 50.0, 100.0]
 
     # Downsampling factors to evaluate
-    data_augmentations
     downsampling_factors = [(0.9, 0.9, 0.9), (0.8, 0.8, 0.8), (0.7, 0.7, 0.7), (0.6, 0.6, 0.6), (0.5, 0.5, 0.5),
                              (0.9, 0.9, 1.0), (0.8, 0.8, 1.0), (0.7, 0.7, 1.0), (0.6, 0.6, 1.0), (0.5, 0.5, 1.0),
                              (0.9, 1.0, 0.9), (0.8, 1.0, 0.8), (0.7, 1.0, 0.7), (0.6, 1.0, 0.6), (0.5, 1.0, 0.5),
