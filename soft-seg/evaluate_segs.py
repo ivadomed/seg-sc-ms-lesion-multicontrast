@@ -77,10 +77,14 @@ def main_dice_eval(msd_path, pred_folder, output_folder):
         # Load soft segmentation
         soft_img = nib.load(pred_img)
         soft_data = soft_img.get_fdata()
-        ## Resample the soft segmentation to match the ground truth if needed
+        ## Resample the GT seg to match the soft segmentation if needed
         if soft_data.shape != gt_data.shape:
-            zoom_factors = [gt_data.shape[i] / soft_data.shape[i] for i in range(3)]
-            soft_data = zoom(soft_data, zoom_factors, order=1)  # Linear interpolation
+            zoom_factors = [soft_data.shape[i] / gt_data.shape[i] for i in range(3)]
+            gt_data = zoom(gt_data, zoom_factors, order=0)  # Nearest neighbor interpolation
+
+        # Binarize the GT segmentation
+        gt_data[gt_data > 0.5] = 1
+        gt_data[gt_data <= 0.5] = 0
         
         # Compute dice at 0.5
         ## Binarize soft segmentation
@@ -139,7 +143,11 @@ def main_dice_eval(msd_path, pred_folder, output_folder):
     plt.grid(True, linestyle='--', alpha=0.6)
     plt.legend()
     plt.savefig(os.path.join(output_folder, "dice_score_per_resampling_factor.png"))
+    plt.close()
     logger.info(f"Saved {os.path.join(output_folder, 'dice_score_per_resampling_factor.png')}")
+
+    # Clear logger
+    logger.remove()
 
 
 if __name__ == "__main__":
