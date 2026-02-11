@@ -5,6 +5,7 @@ Input:
     --msd: Path to the MSD JSON file describing the dataset
     --model-path: Path to the nnUNet model to use for prediction
     -o : Folder to save the calibrated predictions
+    --smaller-changes: If specified, only apply small temperature changes
 
 Author: Pierre-Louis Benveniste
 """
@@ -39,6 +40,7 @@ def parse_args():
     parser.add_argument("--msd", required=True, type=str, help="Path to the MSD JSON file describing the dataset")
     parser.add_argument("--model-path", required=True, type=str, help="Path to the nnUNet model to use for prediction")
     parser.add_argument("-o", required=True, type=str, help="Folder to save the calibrated predictions")
+    parser.add_argument("--smaller-changes", action="store_true", help="If specified, only apply small temperature changes")
     return parser.parse_args()
 
 
@@ -117,7 +119,7 @@ def resample_img(image, resamp_factor, interpolation='linear'):
     return resamp_img
 
 
-def main_temperature_scaling(input_msd, path_model, output_folder):
+def main_temperature_scaling(input_msd, path_model, output_folder, smaller_changes=False):
 
     # Build the output folder
     os.makedirs(output_folder, exist_ok=True)
@@ -164,8 +166,15 @@ def main_temperature_scaling(input_msd, path_model, output_folder):
                              (0.9, 1.0, 0.9), (0.8, 1.0, 0.8), (0.7, 1.0, 0.7), (0.6, 1.0, 0.6), (0.5, 1.0, 0.5),
                              (1.0, 0.9, 0.9), (1.0, 0.8, 0.8), (1.0, 0.7, 0.7), (1.0, 0.6, 0.6), (1.0, 0.5, 0.5),
                              ]
+    if smaller_changes:
+        downsampling_factors = [(1.0, 1.0, 1.0), 
+                                (0.975, 0.975, 0.975), (0.95, 0.95, 0.95), (0.925, 0.925, 0.925), (0.9, 0.9, 0.9),
+                                (0.975, 0.975, 1.000), (0.95, 0.95, 1.00), (0.925, 0.925, 1.000), (0.9, 0.9, 1.0),
+                                (0.975, 1.000, 0.975), (0.95, 1.00, 0.95), (0.925, 1.000, 0.925), (0.9, 1.0, 0.9),
+                                (1.000, 0.975, 0.975), (1.00, 0.95, 0.95), (1.000, 0.925, 0.925), (1.0, 0.9, 0.9),
+                                ]
     
-    results_df = pd.DataFrame(columns=["subject", "resamp_factor", "temperatures", "dice_at_0.5", "lesion_total_volume"])
+    results_df = pd.DataFrame(columns=["subject", "resamp_factor", "temperature", "dice_at_0.5"])
 
     for img, label in tqdm(zip(calib_images, calib_labels), desc="Running lesion segmentation"):
         print(f"Processing image: {img}")
@@ -221,17 +230,26 @@ def main_temperature_scaling(input_msd, path_model, output_folder):
                 # Compute lesion total volume in mm3
                 voxel_volume = np.prod(resamp_img.dim[6:3:-1])  # in mm^3
                 foreground_probs[foreground_probs < 0.5] = 0
-                lesion_total_volume = foreground_probs.sum() * voxel_volume
+                lesion_total_volume_soft = foreground_probs.sum() * voxel_volume
+
+                # Compute binary lesion volume for comparison
+                bin_pred = foreground_probs.copy()
+                bin_pred[bin_pred >= 0.5] = 1
+                bin_pred[bin_pred < 0.5] = 0
+                lesion_total_volume_binary = bin_pred.sum() * voxel_volume
                 
                 # Now we compute the Dice score at a threshold of 0.5
                 # We convert the probabilities to binary predictions using a threshold of 0.5
                 binary_preds = (foreground_probs >= 0.5).astype(np.uint8)
+                # We compute the real lesion volume in mm3 using the ground truth label
+                gt_lesion_volume = (resamp_label.data >= 0.5).sum() * voxel_volume
                 # We compute the Dice score between the binary predictions and the ground truth label
                 dice = dice_score(binary_preds, resamp_label.data.astype(np.uint8))
 
                 # Add everything to the results dataframe
                 new_line = pd.DataFrame({"subject": [subject], "resamp_factor": [down_factor], "temperature": [temp], "dice_at_0.5": [dice],
-                                         "lesion_total_volume": [lesion_total_volume]})
+                                         "lesion_total_volume_soft": [lesion_total_volume_soft], "lesion_total_volume_binary": [lesion_total_volume_binary],
+                                         "gt_lesion_volume": [gt_lesion_volume]})
                 results_df = pd.concat([results_df, new_line], ignore_index=True)
 
         # Save the results dataframe to csv
@@ -245,4 +263,4 @@ def main_temperature_scaling(input_msd, path_model, output_folder):
 
 if __name__ == "__main__":
     args = parse_args()
-    main_temperature_scaling(args.msd, args.model_path, args.o)
+    main_temperature_scaling(args.msd, args.model_path, args.o, args.smaller_changes)
