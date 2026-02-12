@@ -158,7 +158,7 @@ def main_temperature_scaling(input_msd, path_model, output_folder, smaller_chang
     predictor = initialize_predictor(path_model, five_folds=False)
 
     # List of temperatures to evaluate
-    temperatures = [0.5, 1.0, 2.0, 5.0, 10.0, 20.0, 30.0, 50.0, 100.0]
+    temperatures = [0.5, 1.0, 2.0, 5.0, 10.0, 20.0, 30.0, 50.0, 100.0, 1000.0]
 
     # Downsampling factors to evaluate
     downsampling_factors = [(0.9, 0.9, 0.9), (0.8, 0.8, 0.8), (0.7, 0.7, 0.7), (0.6, 0.6, 0.6), (0.5, 0.5, 0.5),
@@ -174,91 +174,125 @@ def main_temperature_scaling(input_msd, path_model, output_folder, smaller_chang
                                 (1.000, 0.975, 0.975), (1.00, 0.95, 0.95), (1.000, 0.925, 0.925), (1.0, 0.9, 0.9),
                                 ]
     
-    results_df = pd.DataFrame(columns=["subject", "resamp_factor", "temperature", "dice_at_0.5"])
+    # Iterate to the the following once on the calibration set and once on the evaluation set, and save the results in a dataframe
+    data = [zip(calib_images, calib_labels), zip(eval_images, eval_labels)]
 
-    for img, label in tqdm(zip(calib_images, calib_labels), desc="Running lesion segmentation"):
-        print(f"Processing image: {img}")
-        subject = img.split("/")[-1].replace(".nii.gz","")
+    for i, dataset in enumerate(data):
+        if i == 0:
+            print("Processing calibration set...")
+        else:
+            print("Processing evaluation set...")
+        imgs, labels = zip(*dataset)
+        results_df = pd.DataFrame(columns=["subject", "resamp_factor", "dice_at_0.5"])
 
-        orig_orientation = get_orientation(Image(img))
-        model_orientation = "RPI"
+        for img, label in tqdm(zip(imgs, labels), desc="Running lesion segmentation"):
+            print(f"Processing image: {img}")
+            subject = img.split("/")[-1].replace(".nii.gz","")
 
-        # Reorient the image to model orientation if not already
-        img_in = Image(img)
-        label_in = Image(label)
-        if orig_orientation != model_orientation:
-            img_in.change_orientation(model_orientation)
-            label_in.change_orientation(model_orientation)
+            orig_orientation = get_orientation(Image(img))
+            model_orientation = "RPI"
 
-        for down_factor in downsampling_factors:
-            print(f"Downsampling factor: {down_factor}")
-            # We downsample the image: factor 2 means going from 1mm to 2mm spacing
-            resamp_img = resample_img(img_in, down_factor, interpolation='linear')
+            # Reorient the image to model orientation if not already
+            img_in = Image(img)
+            label_in = Image(label)
+            if orig_orientation != model_orientation:
+                img_in.change_orientation(model_orientation)
+                label_in.change_orientation(model_orientation)
 
-            # we downsample the label as well, but with nearest neighbor interpolation to avoid creating new classes
-            resamp_label = resample_img(label_in, down_factor, interpolation='nearest')
+            for down_factor in downsampling_factors:
+                print(f"Downsampling factor: {down_factor}")
+                # We downsample the image: factor 2 means going from 1mm to 2mm spacing
+                resamp_img = resample_img(img_in, down_factor, interpolation='linear')
 
-            # prepare the image for prediction
-            data = resamp_img.data.transpose([2, 1, 0])
-            data = np.expand_dims(data, axis=0).astype(np.float32)
+                # we downsample the label as well, but with nearest neighbor interpolation to avoid creating new classes
+                resamp_label = resample_img(label_in, down_factor, interpolation='nearest')
 
-            _, logits = predictor.predict_single_npy_array(
-                input_image=data,
-                # The spacings also have to be reversed to match nnUNet's conventions.
-                image_properties={'spacing': resamp_img.dim[6:3:-1]},
-                # Save the probability maps if specified
-                save_or_return_probabilities=True,
-                # If using a model ensemble, return the logits per fold so we can average them ourselves
-                return_logits_per_fold=False, 
-                return_logits = True
-            )
-            # Convert logits to torch tensor
-            logits = torch.from_numpy(logits)
+                # prepare the image for prediction
+                data = resamp_img.data.transpose([2, 1, 0])
+                data = np.expand_dims(data, axis=0).astype(np.float32)
 
-            for temp in temperatures:
+                _, logits = predictor.predict_single_npy_array(
+                    input_image=data,
+                    # The spacings also have to be reversed to match nnUNet's conventions.
+                    image_properties={'spacing': resamp_img.dim[6:3:-1]},
+                    # Save the probability maps if specified
+                    save_or_return_probabilities=True,
+                    # If using a model ensemble, return the logits per fold so we can average them ourselves
+                    return_logits_per_fold=False, 
+                    return_logits = True
+                )
+                # Convert logits to torch tensor
+                logits = torch.from_numpy(logits)
 
-                # Apply Temperature Scaling: Logits / T
-                scaled_logits = logits / temp
-                # Convert logits to probabilities using Softmax
-                calibrated_probs = F.softmax(scaled_logits, dim=0)
+                for temp in temperatures:
 
-                # Ectract the probabilities for the foreground class (assuming binary segmentation)
-                foreground_probs = calibrated_probs[1, :, :, :].cpu().numpy()
-                # Transpose back
-                foreground_probs = foreground_probs.transpose([2, 1, 0])
+                    # Apply Temperature Scaling: Logits / T
+                    scaled_logits = logits / temp
+                    # Convert logits to probabilities using Softmax
+                    calibrated_probs = F.softmax(scaled_logits, dim=0)
 
-                # Compute lesion total volume in mm3
-                voxel_volume = np.prod(resamp_img.dim[6:3:-1])  # in mm^3
-                foreground_probs[foreground_probs < 0.5] = 0
-                lesion_total_volume_soft = foreground_probs.sum() * voxel_volume
+                    # Ectract the probabilities for the foreground class (assuming binary segmentation)
+                    foreground_probs = calibrated_probs[1, :, :, :].cpu().numpy()
+                    # Transpose back
+                    foreground_probs = foreground_probs.transpose([2, 1, 0])
 
-                # Compute binary lesion volume for comparison
-                bin_pred = foreground_probs.copy()
-                bin_pred[bin_pred >= 0.5] = 1
-                bin_pred[bin_pred < 0.5] = 0
-                lesion_total_volume_binary = bin_pred.sum() * voxel_volume
-                
-                # Now we compute the Dice score at a threshold of 0.5
-                # We convert the probabilities to binary predictions using a threshold of 0.5
-                binary_preds = (foreground_probs >= 0.5).astype(np.uint8)
-                # We compute the real lesion volume in mm3 using the ground truth label
-                gt_lesion_volume = (resamp_label.data >= 0.5).sum() * voxel_volume
-                # We compute the Dice score between the binary predictions and the ground truth label
-                dice = dice_score(binary_preds, resamp_label.data.astype(np.uint8))
+                    # Compute lesion total volume in mm3
+                    voxel_volume = np.prod(resamp_img.dim[6:3:-1])  # in mm^3
+                    foreground_probs[foreground_probs < 0.5] = 0
+                    lesion_total_volume_soft = foreground_probs.sum() * voxel_volume
 
-                # Add everything to the results dataframe
-                new_line = pd.DataFrame({"subject": [subject], "resamp_factor": [down_factor], "temperature": [temp], "dice_at_0.5": [dice],
-                                         "lesion_total_volume_soft": [lesion_total_volume_soft], "lesion_total_volume_binary": [lesion_total_volume_binary],
-                                         "gt_lesion_volume": [gt_lesion_volume]})
-                results_df = pd.concat([results_df, new_line], ignore_index=True)
+                    # Compute binary lesion volume for comparison
+                    bin_pred = foreground_probs.copy()
+                    bin_pred[bin_pred >= 0.5] = 1
+                    bin_pred[bin_pred < 0.5] = 0
+                    lesion_total_volume_binary = bin_pred.sum() * voxel_volume
+                    
+                    # Now we compute the Dice score at a threshold of 0.5
+                    # We convert the probabilities to binary predictions using a threshold of 0.5
+                    binary_preds = (foreground_probs >= 0.5).astype(np.uint8)
+                    # We compute the real lesion volume in mm3 using the ground truth label
+                    gt_lesion_volume = (resamp_label.data >= 0.5).sum() * voxel_volume
+                    # We compute the Dice score between the binary predictions and the ground truth label
+                    dice = dice_score(binary_preds, resamp_label.data.astype(np.uint8))
 
-        # Save the results dataframe to csv
-        results_df.to_csv(os.path.join(output_folder, "temperature_scaling_results.csv"), index=False)
-        print(f"Saved results to {os.path.join(output_folder, 'temperature_scaling_results.csv')}")
+                    # Add everything to the results dataframe
+                    new_line = pd.DataFrame({"subject": [subject], "resamp_factor": [down_factor], "temperature": [temp], "dice_at_0.5": [dice],
+                                            "lesion_total_volume_soft": [lesion_total_volume_soft], "lesion_total_volume_binary": [lesion_total_volume_binary],
+                                            "gt_lesion_volume": [gt_lesion_volume]})
+                    results_df = pd.concat([results_df, new_line], ignore_index=True)
 
-    # Save the results dataframe to csv
-    results_df.to_csv(os.path.join(output_folder, "temperature_scaling_results.csv"), index=False)
-    print(f"Saved results to {os.path.join(output_folder, 'temperature_scaling_results.csv')}")
+            # Save the results dataframe to csv
+            if i == 0:
+                results_df.to_csv(os.path.join(output_folder, "results_train.csv"), index=False)
+                print(f"Saved results to {os.path.join(output_folder, 'results_train.csv')}")
+            else:
+                results_df.to_csv(os.path.join(output_folder, "results_eval.csv"), index=False)
+                print(f"Saved results to {os.path.join(output_folder, 'results_eval.csv')}")
+
+        # We analyze the output dataframe:
+        text_to_write = ""
+        for each_temp in temperatures:
+            text_to_write += f"Analyzing results for temperature: {each_temp}"
+            temp_df = results_df[results_df["temperature"] == each_temp]
+            mean_dice = temp_df["dice_at_0.5"].mean()
+            text_to_write += f"Temperature: {each_temp}, Mean Dice at 0.5: {mean_dice}\n"
+            ## We compute the lesion volume std for soft and binary predictions
+            lesion_volume_std_soft = temp_df.groupby("subject")["lesion_total_volume_soft"].std()
+            lesion_volume_std_binary = temp_df.groupby("subject")["lesion_total_volume_binary"].std()
+            ## We comput the coefficient of variation (std/mean) for soft and binary predictions
+            lesion_volume_cv_soft = lesion_volume_std_soft / temp_df.groupby("subject")["lesion_total_volume_soft"].mean()
+            lesion_volume_cv_binary = lesion_volume_std_binary / temp_df.groupby("subject")["lesion_total_volume_binary"].mean()
+            text_to_write += f"Lesion volume std for soft predictions: {lesion_volume_std_soft.mean()}\n"
+            text_to_write += f"Lesion volume std for binary predictions: {lesion_volume_std_binary.mean()}\n"
+            text_to_write += f"Lesion volume coefficient of variation for soft predictions: {lesion_volume_cv_soft.mean()}\n"
+            text_to_write += f"Lesion volume coefficient of variation for binary predictions: {lesion_volume_cv_binary.mean()}\n"
+        if i == 0:
+            out_txt_path = os.path.join(output_folder, "summary_results_train.txt")
+        else:
+            out_txt_path = os.path.join(output_folder, "summary_results_eval.txt")
+        with open(out_txt_path, "w") as f:
+            f.write(text_to_write)
+        print(f"Saved summary results to {out_txt_path}")
 
 
 if __name__ == "__main__":
