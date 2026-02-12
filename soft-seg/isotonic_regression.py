@@ -143,10 +143,10 @@ def main_temperature_scaling(input_msd, path_model, output_folder, smaller_chang
     np.random.shuffle(labels)
 
     # Select images for temperature scaling
-    calib_images = images[:2]
-    calib_labels = labels[:2]
-    eval_images = images[200:202]
-    eval_labels = labels[200:202]
+    calib_images = images[:200]
+    calib_labels = labels[:200]
+    eval_images = images[200:]
+    eval_labels = labels[200:]
 
     # save the list of images used for calibration and evaluation in the output folder
     with open(os.path.join(output_folder, "calib_images.txt"), "w") as f:
