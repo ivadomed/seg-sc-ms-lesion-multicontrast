@@ -215,8 +215,7 @@ def main_temperature_scaling(input_msd, path_model, output_folder, smaller_chang
                     # Save the probability maps if specified
                     save_or_return_probabilities=True,
                     # If using a model ensemble, return the logits per fold so we can average them ourselves
-                    return_logits_per_fold=False, 
-                    return_logits = True
+                    return_logits_per_fold=False
                 )
                 _, prob_maps = pred
                 pred_soft = np.where(prob_maps[1] > prob_maps[0], prob_maps[1], 0)
