@@ -123,7 +123,7 @@ def resample_img(image, resamp_factor, interpolation='linear'):
     return resamp_img
 
 
-def main_temperature_scaling(input_msd, path_model, output_folder, smaller_changes=False):
+def main_beta_calibration(input_msd, path_model, output_folder, smaller_changes=False):
 
     # Build the output folder
     os.makedirs(output_folder, exist_ok=True)
@@ -392,4 +392,4 @@ def main_temperature_scaling(input_msd, path_model, output_folder, smaller_chang
 
 if __name__ == "__main__":
     args = parse_args()
-    main_temperature_scaling(args.msd, args.model_path, args.o, args.smaller_changes)
+    main_beta_calibration(args.msd, args.model_path, args.o, args.smaller_changes)
