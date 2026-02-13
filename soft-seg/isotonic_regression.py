@@ -10,6 +10,7 @@ Input:
 Author: Pierre-Louis Benveniste
 """
 import argparse
+from copyreg import pickle
 import importlib
 import os
 from pathlib import Path
@@ -233,6 +234,10 @@ def main_temperature_scaling(input_msd, path_model, output_folder, smaller_chang
     iso_reg = IsotonicRegression(out_of_bounds='clip')
     iso_reg.fit(all_calib_probs, all_calib_labels)
 
+    # save the isotonic regression model using joblib
+    with open(os.path.join(output_folder, 'isotonic_reg_model.pkl'),'wb') as f:
+        pickle.dump(iso_reg, f)
+
     # Now we move to the evaluation set
     # Initialize eval calib values
     all_eval_calib_probs = []
@@ -313,6 +318,8 @@ def main_temperature_scaling(input_msd, path_model, output_folder, smaller_chang
                                         "bin_lesion_volume_after_iso": [bin_lesion_volume_after], "bin_lesion_volume_before_iso": [bin_lesion_volume_before]})
             results_df = pd.concat([results_df, new_line], ignore_index=True)
 
+        # Save the results dataframe after each image to avoid losing everything in case of crash
+        results_df.to_csv(os.path.join(output_folder, "results_evaluation.csv"), index=False)
 
     # Concatenate all the eval calib values
     all_eval_calib_probs = np.concatenate(all_eval_calib_probs)

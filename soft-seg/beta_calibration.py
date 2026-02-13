@@ -13,6 +13,7 @@ import argparse
 import importlib
 import os
 from pathlib import Path
+import pickle
 import numpy as np
 import nibabel as nib
 from tqdm import tqdm
@@ -239,6 +240,10 @@ def main_temperature_scaling(input_msd, path_model, output_folder, smaller_chang
     # you must ensure coefficients a and b are >= 0[cite: 249, 336].
     lr = LogisticRegression(solver='lbfgs')
     lr.fit(X, all_calib_labels)
+
+    # save the isotonic regression model using joblib
+    with open(os.path.join(output_folder, 'beta_calib_model.pkl'),'wb') as f:
+        pickle.dump(lr, f)
     
     a = lr.coef_[0][0]
     b = lr.coef_[0][1]
@@ -335,6 +340,9 @@ def main_temperature_scaling(input_msd, path_model, output_folder, smaller_chang
                                     "soft_lesion_volume_after_calib": [soft_lesion_volume_after], "soft_lesion_volume_before_calib": [soft_lesion_volume_before],
                                         "bin_lesion_volume_after_calib": [bin_lesion_volume_after], "bin_lesion_volume_before_calib": [bin_lesion_volume_before]})
             results_df = pd.concat([results_df, new_line], ignore_index=True)
+
+        # Save the results dataframe after each image to avoid losing everything in case of crash
+        results_df.to_csv(os.path.join(output_folder, "results_evaluation.csv"), index=False)
 
     all_eval_probs = np.concatenate(all_eval_probs)
     all_eval_calib_probs = np.concatenate(all_eval_calib_probs)
