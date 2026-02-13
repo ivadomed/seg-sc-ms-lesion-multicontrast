@@ -32,10 +32,10 @@ from image import Image, get_orientation
 import numpy as np
 import torch.nn.functional as F
 import pandas as pd
-from sklearn.isotonic import IsotonicRegression
 import nilearn.image
 import matplotlib.pyplot as plt
 from sklearn.calibration import calibration_curve
+from sklearn.linear_model import LogisticRegression
 
 
 def parse_args():
@@ -173,7 +173,7 @@ def main_temperature_scaling(input_msd, path_model, output_folder, smaller_chang
                                 (0.975, 1.000, 0.975), (0.95, 1.00, 0.95), (0.925, 1.000, 0.925), (0.9, 1.0, 0.9),
                                 (1.000, 0.975, 0.975), (1.00, 0.95, 0.95), (1.000, 0.925, 0.925), (1.0, 0.9, 0.9),
                                 ]
-    
+
     # Initializ the calib values
     all_calib_probs = []
     all_calib_labels = []
@@ -217,30 +217,42 @@ def main_temperature_scaling(input_msd, path_model, output_folder, smaller_chang
         # Add the probs and labels to the calib values
         all_calib_probs.append(probs.flatten())
         all_calib_labels.append(label_data.flatten())
-
+    
     # Concatenate all the calib values
     all_calib_probs = np.concatenate(all_calib_probs)
     all_calib_labels = np.concatenate(all_calib_labels)
     print(f"Number of calib values: {len(all_calib_probs)}")
+
+    # 1. Transform scores into log-space features
+    # We add a small epsilon to avoid log(0) or log(1) issues
+    eps = np.finfo(float).eps
+    all_calib_probs = np.clip(all_calib_probs, eps, 1 - eps)
     
-    # Remove prob values which are below 0.01
-    mask = all_calib_probs >= 0.001
-    all_calib_probs = all_calib_probs[mask]
-    all_calib_labels = all_calib_labels[mask]
-    print(f"Number of calib values after removing probs < 0.01: {len(all_calib_probs)}")
+    s_prime = np.log(all_calib_probs)                 # ln(s) 
+    s_double_prime = -np.log(1 - all_calib_probs)      # -ln(1-s) 
+    
+    # 2. Reshape for bivariate logistic regression [cite: 322, 332]
+    X = np.column_stack((s_prime, s_double_prime))
+    
+    # 3. Fit Logistic Regression [cite: 230, 291]
+    # Note: If you want to strictly enforce monotonicity, 
+    # you must ensure coefficients a and b are >= 0[cite: 249, 336].
+    lr = LogisticRegression(solver='lbfgs')
+    lr.fit(X, all_calib_labels)
+    
+    a = lr.coef_[0][0]
+    b = lr.coef_[0][1]
+    c = lr.intercept_[0]
 
-    # Fit isotonic regression
-    iso_reg = IsotonicRegression(out_of_bounds='clip')
-    iso_reg.fit(all_calib_probs, all_calib_labels)
-
-    # Now we move to the evaluation set
-    # Initialize eval calib values
+    print(f"Fitted logistic regression coefficients: a={a}, b={b}, c={c}")
+    results_df = pd.DataFrame(columns=["subject", "resamp_factor", "dice_before_calib", "dice_after_calib",
+                                       "soft_lesion_volume_after_calib", "soft_lesion_volume_before_calib",
+                                       "bin_lesion_volume_after_calib", "bin_lesion_volume_before_calib"])
+    
+    # Initialize all eval calib values
     all_eval_calib_probs = []
-    all_eval_calib_labels = []
-
-    results_df = pd.DataFrame(columns=["subject", "resamp_factor", "dice_before_iso", "dice_after_iso",
-                                       "soft_lesion_volume_after_iso", "soft_lesion_volume_before_iso",
-                                       "bin_lesion_volume_after_iso", "bin_lesion_volume_before_iso"])
+    all_eval_probs = []
+    all_eval_labels = []
 
     # Now we apply this to the images of the evaluation set, and save the calibrated probabilities
     for img, label in tqdm(zip(eval_images, eval_labels), desc="Running lesion segmentation on evaluation set"):
@@ -287,20 +299,31 @@ def main_temperature_scaling(input_msd, path_model, output_folder, smaller_chang
             probs = torch.nn.functional.softmax(logits, dim=0)
             probs = probs[1].numpy()  # Get probability for lesion class
 
+            # We also save the non-calibrated probabilities for evaluation purposes
+            all_eval_probs.append(probs.flatten())
+            all_eval_labels.append(label_data.flatten())
+
+            # Perform beta calibration using the fitted logistic regression coefficients
+            eps = np.finfo(float).eps
+            probs = np.clip(probs, eps, 1 - eps)
+            
+            # Formula: 1 / (1 + 1 / (exp(c) * (s^a / (1-s)^b))) [cite: 248, 327]
+            numerator = np.power(probs, a)
+            denominator = np.power(1 - probs, b)
+            
+            lr_ratio = (np.exp(c) * (numerator / denominator))
+            calibrated_probs = 1 / (1 + (1 / lr_ratio))
+
             # Add them to the eval calib values
-            all_eval_calib_probs.append(probs.flatten())
-            all_eval_calib_labels.append(label_data.flatten())
+            all_eval_calib_probs.append(calibrated_probs.flatten())
 
-            # Compute the calibrated probabilities
-            calibrated_probs = iso_reg.predict(probs.flatten()).reshape(probs.shape)
-
-            # Compute Dice scores before and after isotonic regression
+            # Compute Dice scores before and after beta calibration
             binary_prediction_before = np.where(probs > 0.5, 1, 0)
             binary_prediction_after = np.where(calibrated_probs > 0.5, 1, 0)
             dice_before = dice_score(binary_prediction_before, label_data)
             dice_after = dice_score(binary_prediction_after, label_data)
 
-            # Compute lesion volumes before and after isotonic regression
+            # Compute lesion volumes before and after beta calibration
             voxel_volume = np.prod(resamp_img.dim[6:3:-1])  # Get
             soft_lesion_volume_before = probs.sum() * voxel_volume
             soft_lesion_volume_after = calibrated_probs.sum() * voxel_volume
@@ -308,32 +331,21 @@ def main_temperature_scaling(input_msd, path_model, output_folder, smaller_chang
             bin_lesion_volume_after = binary_prediction_after.sum() * voxel_volume
 
             # Add everything to the results dataframe
-            new_line = pd.DataFrame({"subject": [subject], "resamp_factor": [down_factor], "dice_before_iso": [dice_before], "dice_after_iso": [dice_after],
-                                    "soft_lesion_volume_after_iso": [soft_lesion_volume_after], "soft_lesion_volume_before_iso": [soft_lesion_volume_before],
-                                        "bin_lesion_volume_after_iso": [bin_lesion_volume_after], "bin_lesion_volume_before_iso": [bin_lesion_volume_before]})
+            new_line = pd.DataFrame({"subject": [subject], "resamp_factor": [down_factor], "dice_before_calib": [dice_before], "dice_after_calib": [dice_after],
+                                    "soft_lesion_volume_after_calib": [soft_lesion_volume_after], "soft_lesion_volume_before_calib": [soft_lesion_volume_before],
+                                        "bin_lesion_volume_after_calib": [bin_lesion_volume_after], "bin_lesion_volume_before_calib": [bin_lesion_volume_before]})
             results_df = pd.concat([results_df, new_line], ignore_index=True)
 
-
-    # Concatenate all the eval calib values
+    all_eval_probs = np.concatenate(all_eval_probs)
     all_eval_calib_probs = np.concatenate(all_eval_calib_probs)
-    all_eval_calib_labels = np.concatenate(all_eval_calib_labels)
-    print(f"Number of eval calib values: {len(all_eval_calib_probs)}")
-
-    # Remove prob values which are below 0.001
-    mask = all_eval_calib_probs >= 0.001
-    all_eval_calib_probs = all_eval_calib_probs[mask]
-    all_eval_calib_labels = all_eval_calib_labels[mask]
-    print(f"Number of eval calib values after removing probs < 0.001: {len(all_eval_calib_probs)}")
-
-    # Apply isotonic regression to calibrate probabilities
-    eval_calibrated_probs = iso_reg.predict(all_eval_calib_probs)
+    all_eval_labels = np.concatenate(all_eval_labels)
     
-    # Plot and save the calibration curves, before and after isotonic regression
-    prob_true, prob_pred = calibration_curve(all_eval_calib_labels, all_eval_calib_probs, n_bins=20)
-    prob_true_calib, prob_pred_calib = calibration_curve(all_eval_calib_labels, eval_calibrated_probs.flatten(), n_bins=20)
+    # Plot and save the calibration curves, before and after beta calibration
+    prob_true, prob_pred = calibration_curve(all_eval_labels, all_eval_probs, n_bins=20)
+    prob_true_calib, prob_pred_calib = calibration_curve(all_eval_labels, all_eval_calib_probs.flatten(), n_bins=20)
     plt.figure(figsize=(10, 10))
-    plt.plot(prob_pred, prob_true, marker='o', label='Before Isotonic Regression')
-    plt.plot(prob_pred_calib, prob_true_calib, marker='o', label='After Isotonic Regression')
+    plt.plot(prob_pred, prob_true, marker='o', label='Before beta calibration')
+    plt.plot(prob_pred_calib, prob_true_calib, marker='o', label='After beta calibration')
     plt.plot([0, 1], [0, 1], linestyle='--', label='Perfectly Calibrated')
     plt.xlabel('Mean Predicted Probability')
     plt.ylabel('Fraction of Positives')
@@ -343,30 +355,31 @@ def main_temperature_scaling(input_msd, path_model, output_folder, smaller_chang
     plt.savefig(os.path.join(output_folder, f"calibration_curve.png"))
     plt.close()
 
-    # Now we evaluate the results of isotonic regression:
+    # Now we evaluate the results of beta calibration:
     text_to_write = ""
-    ## We compute the lesion volume std for soft and binary predictions before and after isotonic regression
-    lesion_volume_std_soft_before = results_df.groupby("subject")["soft_lesion_volume_before_iso"].std()
-    lesion_volume_std_binary_before = results_df.groupby("subject")["bin_lesion_volume_before_iso"].std()
-    lesion_volume_std_soft_after = results_df.groupby("subject")["soft_lesion_volume_after_iso"].std()
-    lesion_volume_std_binary_after = results_df.groupby("subject")["bin_lesion_volume_after_iso"].std()
+    ## We compute the lesion volume std for soft and binary predictions before and after beta calibration
+    lesion_volume_std_soft_before = results_df.groupby("subject")["soft_lesion_volume_before_calib"].std()
+    lesion_volume_std_binary_before = results_df.groupby("subject")["bin_lesion_volume_before_calib"].std()
+    lesion_volume_std_soft_after = results_df.groupby("subject")["soft_lesion_volume_after_calib"].std()
+    lesion_volume_std_binary_after = results_df.groupby("subject")["bin_lesion_volume_after_calib"].std()
     ## We comput the coefficient of variation (std/mean) for soft and binary predictions
-    lesion_volume_cv_soft_before = lesion_volume_std_soft_before / results_df.groupby("subject")["soft_lesion_volume_before_iso"].mean()
-    lesion_volume_cv_soft_after = lesion_volume_std_soft_after / results_df.groupby("subject")["soft_lesion_volume_after_iso"].mean()
-    lesion_volume_cv_binary_before = lesion_volume_std_binary_before / results_df.groupby("subject")["bin_lesion_volume_before_iso"].mean()
-    lesion_volume_cv_binary_after = lesion_volume_std_binary_after / results_df.groupby("subject")["bin_lesion_volume_after_iso"].mean()
-    text_to_write += f"Lesion volume std for soft predictions before isotonic regression: {lesion_volume_std_soft_before.mean()}\n"
-    text_to_write += f"Lesion volume std for soft predictions after isotonic regression: {lesion_volume_std_soft_after.mean()}\n"
-    text_to_write += f"Lesion volume std for binary predictions before isotonic regression: {lesion_volume_std_binary_before.mean()}\n"
-    text_to_write += f"Lesion volume std for binary predictions after isotonic regression: {lesion_volume_std_binary_after.mean()}\n"
-    text_to_write += f"Lesion volume coefficient of variation for soft predictions before isotonic regression: {lesion_volume_cv_soft_before.mean()}\n"
-    text_to_write += f"Lesion volume coefficient of variation for soft predictions after isotonic regression: {lesion_volume_cv_soft_after.mean()}\n"
-    text_to_write += f"Lesion volume coefficient of variation for binary predictions before isotonic regression: {lesion_volume_cv_binary_before.mean()}\n"
-    text_to_write += f"Lesion volume coefficient of variation for binary predictions after isotonic regression: {lesion_volume_cv_binary_after.mean()}\n"
+    lesion_volume_cv_soft_before = lesion_volume_std_soft_before / results_df.groupby("subject")["soft_lesion_volume_before_calib"].mean()
+    lesion_volume_cv_soft_after = lesion_volume_std_soft_after / results_df.groupby("subject")["soft_lesion_volume_after_calib"].mean()
+    lesion_volume_cv_binary_before = lesion_volume_std_binary_before / results_df.groupby("subject")["bin_lesion_volume_before_calib"].mean()
+    lesion_volume_cv_binary_after = lesion_volume_std_binary_after / results_df.groupby("subject")["bin_lesion_volume_after_calib"].mean()
+    text_to_write += "Summary of evaluation results:\n"
+    text_to_write += f"Coefficient used in beta calibration: a={a}, b={b}, c={c}\n"
+    text_to_write += f"Lesion volume std for soft predictions before beta calibration: {lesion_volume_std_soft_before.mean()}\n"
+    text_to_write += f"Lesion volume std for soft predictions after beta calibration: {lesion_volume_std_soft_after.mean()}\n"
+    text_to_write += f"Lesion volume std for binary predictions before beta calibration: {lesion_volume_std_binary_before.mean()}\n"
+    text_to_write += f"Lesion volume std for binary predictions after beta calibration: {lesion_volume_std_binary_after.mean()}\n"
+    text_to_write += f"Lesion volume coefficient of variation for soft predictions before beta calibration: {lesion_volume_cv_soft_before.mean()}\n"
+    text_to_write += f"Lesion volume coefficient of variation for soft predictions after beta calibration: {lesion_volume_cv_soft_after.mean()}\n"
+    text_to_write += f"Lesion volume coefficient of variation for binary predictions before beta calibration: {lesion_volume_cv_binary_before.mean()}\n"
+    text_to_write += f"Lesion volume coefficient of variation for binary predictions after beta calibration: {lesion_volume_cv_binary_after.mean()}\n"
     out_txt_path = os.path.join(output_folder, "summary_results_evaluation.txt")
     with open(out_txt_path, "w") as f:
             f.write(text_to_write)
-
 
 
 if __name__ == "__main__":
