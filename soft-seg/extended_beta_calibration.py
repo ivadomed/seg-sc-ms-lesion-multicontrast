@@ -1,5 +1,5 @@
 """
-Extended Beta Calibration for Soft Segmentation
+Extended beta Calibration for Soft Segmentation
 
 Input:
     --msd: Path to the MSD JSON file describing the dataset
@@ -32,14 +32,15 @@ from image import Image, get_orientation
 import numpy as np
 import torch.nn.functional as F
 import pandas as pd
-from sklearn.isotonic import IsotonicRegression
 import nilearn.image
 import matplotlib.pyplot as plt
 from sklearn.calibration import calibration_curve
+from sklearn.linear_model import LogisticRegression
+from torch.nn import Conv2d, Parameter, Module, Sigmoid
 
 
 def parse_args():
-    parser = argparse.ArgumentParser(description="Perform temperature scaling on soft segmentations.")
+    parser = argparse.ArgumentParser(description="Perform beta calibration on soft segmentations.")
     parser.add_argument("--msd", required=True, type=str, help="Path to the MSD JSON file describing the dataset")
     parser.add_argument("--model-path", required=True, type=str, help="Path to the nnUNet model to use for prediction")
     parser.add_argument("-o", required=True, type=str, help="Folder to save the calibrated predictions")
@@ -122,7 +123,33 @@ def resample_img(image, resamp_factor, interpolation='linear'):
     return resamp_img
 
 
-def main_temperature_scaling(input_msd, path_model, output_folder, smaller_changes=False):
+class ExtendedBetaCalibration(Module):
+    def __init__(self, k=7):
+        super(ExtendedBetaCalibration, self).__init__()
+        # k=7 is suggested to leverage spatial information effectively 
+        # Parameters a and b are implemented as convolutional kernels 
+        self.a = Conv2d(in_channels=1, out_channels=1, kernel_size=k, padding=k//2, bias=False)
+        self.b = Conv2d(in_channels=1, out_channels=1, kernel_size=k, padding=k//2, bias=False)
+        # Parameter c remains a single learnable bias 
+        self.c = Parameter(torch.zeros(1))
+
+    def forward(self, s):
+        # s is the raw probability map from your model 
+        eps = 1e-7 
+        s = torch.clamp(s, eps, 1 - eps)
+        
+        # Transformations based on beta calibration first principles 
+        s1 = torch.log(s)                  # ln(s)
+        s2 = -torch.log(1 - s)             # -ln(1-s)
+        
+        # Combine spatial features with the learned kernels 
+        output = self.a(s1) + self.b(s2) + self.c
+        
+        # The output remains in logit-space; apply sigmoid for final probabilities 
+        return torch.sigmoid(output)
+
+
+def main_extended_beta_calibration(input_msd, path_model, output_folder, smaller_changes=False):
 
     # Build the output folder
     os.makedirs(output_folder, exist_ok=True)
@@ -173,10 +200,15 @@ def main_temperature_scaling(input_msd, path_model, output_folder, smaller_chang
                                 (0.975, 1.000, 0.975), (0.95, 1.00, 0.95), (0.925, 1.000, 0.925), (0.9, 1.0, 0.9),
                                 (1.000, 0.975, 0.975), (1.00, 0.95, 0.95), (1.000, 0.925, 0.925), (1.0, 0.9, 0.9),
                                 ]
-    
-    # Initializ the calib values
-    all_calib_probs = []
-    all_calib_labels = []
+
+    # Initialize the training of the extended beta calibration model
+    calib_model = ExtendedBetaCalibration(k=7).cuda()
+    optimizer = torch.optim.LBFGS(calib_model.parameters(), lr=0.01, max_iter=20)
+    criterion = torch.nn.BCELoss()
+
+    # Pre-collect data for training (working on slices to save memory)
+    # Extended beta needs full spatial context, so don't flatten voxels yet
+    calib_model.train()
 
     for img, label in tqdm(zip(calib_images, calib_labels), desc="Running lesion segmentation"):
         print(f"Processing image: {img}")
@@ -214,33 +246,60 @@ def main_temperature_scaling(input_msd, path_model, output_folder, smaller_chang
         probs = torch.nn.functional.softmax(logits, dim=0)
         probs = probs[1].numpy()  # Get probability for lesion class
 
-        # Add the probs and labels to the calib values
-        all_calib_probs.append(probs.flatten())
-        all_calib_labels.append(label_data.flatten())
+        # Convert your probs (H, W, D) to (D, 1, H, W)
+        probs_torch = torch.from_numpy(probs).float() 
+        # Move the depth/slices dimension to the front
+        probs_torch = probs_torch.permute(2, 0, 1) 
+        # Add the 'Channel' dimension required by Conv2d
+        probs_torch = probs_torch.unsqueeze(1) 
 
-    # Concatenate all the calib values
-    all_calib_probs = np.concatenate(all_calib_probs)
-    all_calib_labels = np.concatenate(all_calib_labels)
-    print(f"Number of calib values: {len(all_calib_probs)}")
+        # 2. Move input to the GPU to match the model weights
+        probs_torch = probs_torch.cuda() 
+
+        # 3. Now run the calibration model
+        calibrated_output = calib_model(probs_torch)
+
+        print(f"Calibrated output shape: {calibrated_output.shape}, Label shape: {label_data.shape}")
+
+        # Format the labels to match the output shape of the model (D, 1, H, W)
+        targets = torch.from_numpy(label_data).float()
+        targets = targets.permute(3, 0, 1, 2)
+        targets = targets.cuda()  # Add channel dimension and move to GPU
+
+        print(f"Calibrated output shape: {calibrated_output.shape}, Label shape: {targets.shape}")
+
+        def closure():
+            optimizer.zero_grad()
+            # Forward pass: leveraging spatial information via Conv2d kernels 
+            output = calib_model(probs_torch)
+            # Binary Cross-Entropy (BCE) is used for optimization [cite: 1198]
+            loss = criterion(output, targets)
+            loss.backward()
+            return loss
+
+        # Pass the function 'closure', not the 'loss' tensor
+        optimizer.step(closure)
     
-    # Remove prob values which are below 0.01
-    mask = all_calib_probs >= 0.001
-    all_calib_probs = all_calib_probs[mask]
-    all_calib_labels = all_calib_labels[mask]
-    print(f"Number of calib values after removing probs < 0.01: {len(all_calib_probs)}")
+    results_df = pd.DataFrame(columns=["subject", "resamp_factor", "dice_before_calib", "dice_after_calib",
+                                       "soft_lesion_volume_after_calib", "soft_lesion_volume_before_calib",
+                                       "bin_lesion_volume_after_calib", "bin_lesion_volume_before_calib"])
+    
+    # Get the learned parameters from the calibration model
+    a = calib_model.a.weight.detach().cpu().numpy().flatten()[0]
+    b = calib_model.b.weight.detach().cpu().numpy().flatten()[0]
+    c = calib_model.c.detach().cpu().numpy().flatten()[0]
+    print(f"Learned parameters for beta calibration: a={a}, b={b}, c={c}")
 
-    # Fit isotonic regression
-    iso_reg = IsotonicRegression(out_of_bounds='clip')
-    iso_reg.fit(all_calib_probs, all_calib_labels)
+    # save the trained model
+    torch.save(calib_model.state_dict(), os.path.join(output_folder, "extended_beta_calibration_model.pth"))
 
-    # Now we move to the evaluation set
-    # Initialize eval calib values
+    # Initialize all eval calib values
     all_eval_calib_probs = []
-    all_eval_calib_labels = []
+    all_eval_probs = []
+    all_eval_labels = []
 
-    results_df = pd.DataFrame(columns=["subject", "resamp_factor", "dice_before_iso", "dice_after_iso",
-                                       "soft_lesion_volume_after_iso", "soft_lesion_volume_before_iso",
-                                       "bin_lesion_volume_after_iso", "bin_lesion_volume_before_iso"])
+    # Now we switch to evaluation mode for the calibration model
+    calib_model.eval()
 
     # Now we apply this to the images of the evaluation set, and save the calibrated probabilities
     for img, label in tqdm(zip(eval_images, eval_labels), desc="Running lesion segmentation on evaluation set"):
@@ -287,20 +346,35 @@ def main_temperature_scaling(input_msd, path_model, output_folder, smaller_chang
             probs = torch.nn.functional.softmax(logits, dim=0)
             probs = probs[1].numpy()  # Get probability for lesion class
 
-            # Add them to the eval calib values
-            all_eval_calib_probs.append(probs.flatten())
-            all_eval_calib_labels.append(label_data.flatten())
+            with torch.no_grad():
+                # Convert your probs (H, W, D) to (D, 1, H, W)
+                probs_torch = torch.from_numpy(probs).float() 
+                # Move the depth/slices dimension to the front
+                probs_torch = probs_torch.permute(2, 0, 1) 
+                # Add the 'Channel' dimension required by Conv2d
+                probs_torch = probs_torch.unsqueeze(1) 
+                # 2. Move input to the GPU to match the model weights
+                probs_torch = probs_torch.cuda() 
 
-            # Compute the calibrated probabilities
-            calibrated_probs = iso_reg.predict(probs.flatten()).reshape(probs.shape)
+                calibrated_probs = calib_model(probs_torch).cpu().numpy().squeeze()
 
-            # Compute Dice scores before and after isotonic regression
+            # Restore the original orientation of the calibrated probabilities to match the label
+            calibrated_probs = np.transpose(calibrated_probs, (1, 2, 0))  # Move back to (H, W, D)
+
+            print(f"Calibrated output shape: {calibrated_probs.shape}, Label shape: {label_data.shape}")
+
+            # Store values for calibration curve
+            all_eval_probs.append(probs.flatten())
+            all_eval_labels.append(label_data.flatten())
+            all_eval_calib_probs.append(calibrated_probs.flatten())
+
+            # Compute Dice scores before and after beta calibration
             binary_prediction_before = np.where(probs > 0.5, 1, 0)
             binary_prediction_after = np.where(calibrated_probs > 0.5, 1, 0)
             dice_before = dice_score(binary_prediction_before, label_data)
             dice_after = dice_score(binary_prediction_after, label_data)
 
-            # Compute lesion volumes before and after isotonic regression
+            # Compute lesion volumes before and after beta calibration
             voxel_volume = np.prod(resamp_img.dim[6:3:-1])  # Get
             soft_lesion_volume_before = probs.sum() * voxel_volume
             soft_lesion_volume_after = calibrated_probs.sum() * voxel_volume
@@ -308,32 +382,24 @@ def main_temperature_scaling(input_msd, path_model, output_folder, smaller_chang
             bin_lesion_volume_after = binary_prediction_after.sum() * voxel_volume
 
             # Add everything to the results dataframe
-            new_line = pd.DataFrame({"subject": [subject], "resamp_factor": [down_factor], "dice_before_iso": [dice_before], "dice_after_iso": [dice_after],
-                                    "soft_lesion_volume_after_iso": [soft_lesion_volume_after], "soft_lesion_volume_before_iso": [soft_lesion_volume_before],
-                                        "bin_lesion_volume_after_iso": [bin_lesion_volume_after], "bin_lesion_volume_before_iso": [bin_lesion_volume_before]})
+            new_line = pd.DataFrame({"subject": [subject], "resamp_factor": [down_factor], "dice_before_calib": [dice_before], "dice_after_calib": [dice_after],
+                                    "soft_lesion_volume_after_calib": [soft_lesion_volume_after], "soft_lesion_volume_before_calib": [soft_lesion_volume_before],
+                                        "bin_lesion_volume_after_calib": [bin_lesion_volume_after], "bin_lesion_volume_before_calib": [bin_lesion_volume_before]})
             results_df = pd.concat([results_df, new_line], ignore_index=True)
+        
+        # Save the results dataframe for this subject
+        results_df.to_csv(os.path.join(output_folder, f"results_calibrated.csv"), index=False)
 
-
-    # Concatenate all the eval calib values
+    all_eval_probs = np.concatenate(all_eval_probs)
     all_eval_calib_probs = np.concatenate(all_eval_calib_probs)
-    all_eval_calib_labels = np.concatenate(all_eval_calib_labels)
-    print(f"Number of eval calib values: {len(all_eval_calib_probs)}")
+    all_eval_labels = np.concatenate(all_eval_labels)
 
-    # Remove prob values which are below 0.001
-    mask = all_eval_calib_probs >= 0.001
-    all_eval_calib_probs = all_eval_calib_probs[mask]
-    all_eval_calib_labels = all_eval_calib_labels[mask]
-    print(f"Number of eval calib values after removing probs < 0.001: {len(all_eval_calib_probs)}")
-
-    # Apply isotonic regression to calibrate probabilities
-    eval_calibrated_probs = iso_reg.predict(all_eval_calib_probs)
-    
-    # Plot and save the calibration curves, before and after isotonic regression
-    prob_true, prob_pred = calibration_curve(all_eval_calib_labels, all_eval_calib_probs, n_bins=20)
-    prob_true_calib, prob_pred_calib = calibration_curve(all_eval_calib_labels, eval_calibrated_probs.flatten(), n_bins=20)
+    # Plot and save the calibration curves, before and after beta calibration
+    prob_true, prob_pred = calibration_curve(all_eval_labels, all_eval_probs, n_bins=20)
+    prob_true_calib, prob_pred_calib = calibration_curve(all_eval_labels, all_eval_calib_probs.flatten(), n_bins=20)
     plt.figure(figsize=(10, 10))
-    plt.plot(prob_pred, prob_true, marker='o', label='Before Isotonic Regression')
-    plt.plot(prob_pred_calib, prob_true_calib, marker='o', label='After Isotonic Regression')
+    plt.plot(prob_pred, prob_true, marker='o', label='Before beta calibration')
+    plt.plot(prob_pred_calib, prob_true_calib, marker='o', label='After beta calibration')
     plt.plot([0, 1], [0, 1], linestyle='--', label='Perfectly Calibrated')
     plt.xlabel('Mean Predicted Probability')
     plt.ylabel('Fraction of Positives')
@@ -343,32 +409,33 @@ def main_temperature_scaling(input_msd, path_model, output_folder, smaller_chang
     plt.savefig(os.path.join(output_folder, f"calibration_curve.png"))
     plt.close()
 
-    # Now we evaluate the results of isotonic regression:
+    # Now we evaluate the results of beta calibration:
     text_to_write = ""
-    ## We compute the lesion volume std for soft and binary predictions before and after isotonic regression
-    lesion_volume_std_soft_before = results_df.groupby("subject")["soft_lesion_volume_before_iso"].std()
-    lesion_volume_std_binary_before = results_df.groupby("subject")["bin_lesion_volume_before_iso"].std()
-    lesion_volume_std_soft_after = results_df.groupby("subject")["soft_lesion_volume_after_iso"].std()
-    lesion_volume_std_binary_after = results_df.groupby("subject")["bin_lesion_volume_after_iso"].std()
+    ## We compute the lesion volume std for soft and binary predictions before and after beta calibration
+    lesion_volume_std_soft_before = results_df.groupby("subject")["soft_lesion_volume_before_calib"].std()
+    lesion_volume_std_binary_before = results_df.groupby("subject")["bin_lesion_volume_before_calib"].std()
+    lesion_volume_std_soft_after = results_df.groupby("subject")["soft_lesion_volume_after_calib"].std()
+    lesion_volume_std_binary_after = results_df.groupby("subject")["bin_lesion_volume_after_calib"].std()
     ## We comput the coefficient of variation (std/mean) for soft and binary predictions
-    lesion_volume_cv_soft_before = lesion_volume_std_soft_before / results_df.groupby("subject")["soft_lesion_volume_before_iso"].mean()
-    lesion_volume_cv_soft_after = lesion_volume_std_soft_after / results_df.groupby("subject")["soft_lesion_volume_after_iso"].mean()
-    lesion_volume_cv_binary_before = lesion_volume_std_binary_before / results_df.groupby("subject")["bin_lesion_volume_before_iso"].mean()
-    lesion_volume_cv_binary_after = lesion_volume_std_binary_after / results_df.groupby("subject")["bin_lesion_volume_after_iso"].mean()
-    text_to_write += f"Lesion volume std for soft predictions before isotonic regression: {lesion_volume_std_soft_before.mean()}\n"
-    text_to_write += f"Lesion volume std for soft predictions after isotonic regression: {lesion_volume_std_soft_after.mean()}\n"
-    text_to_write += f"Lesion volume std for binary predictions before isotonic regression: {lesion_volume_std_binary_before.mean()}\n"
-    text_to_write += f"Lesion volume std for binary predictions after isotonic regression: {lesion_volume_std_binary_after.mean()}\n"
-    text_to_write += f"Lesion volume coefficient of variation for soft predictions before isotonic regression: {lesion_volume_cv_soft_before.mean()}\n"
-    text_to_write += f"Lesion volume coefficient of variation for soft predictions after isotonic regression: {lesion_volume_cv_soft_after.mean()}\n"
-    text_to_write += f"Lesion volume coefficient of variation for binary predictions before isotonic regression: {lesion_volume_cv_binary_before.mean()}\n"
-    text_to_write += f"Lesion volume coefficient of variation for binary predictions after isotonic regression: {lesion_volume_cv_binary_after.mean()}\n"
+    lesion_volume_cv_soft_before = lesion_volume_std_soft_before / results_df.groupby("subject")["soft_lesion_volume_before_calib"].mean()
+    lesion_volume_cv_soft_after = lesion_volume_std_soft_after / results_df.groupby("subject")["soft_lesion_volume_after_calib"].mean()
+    lesion_volume_cv_binary_before = lesion_volume_std_binary_before / results_df.groupby("subject")["bin_lesion_volume_before_calib"].mean()
+    lesion_volume_cv_binary_after = lesion_volume_std_binary_after / results_df.groupby("subject")["bin_lesion_volume_after_calib"].mean()
+    text_to_write += "Summary of evaluation results:\n"
+    text_to_write += f"Coefficient used in beta calibration: a={a}, b={b}, c={c}\n"
+    text_to_write += f"Lesion volume std for soft predictions before beta calibration: {lesion_volume_std_soft_before.mean()}\n"
+    text_to_write += f"Lesion volume std for soft predictions after beta calibration: {lesion_volume_std_soft_after.mean()}\n"
+    text_to_write += f"Lesion volume std for binary predictions before beta calibration: {lesion_volume_std_binary_before.mean()}\n"
+    text_to_write += f"Lesion volume std for binary predictions after beta calibration: {lesion_volume_std_binary_after.mean()}\n"
+    text_to_write += f"Lesion volume coefficient of variation for soft predictions before beta calibration: {lesion_volume_cv_soft_before.mean()}\n"
+    text_to_write += f"Lesion volume coefficient of variation for soft predictions after beta calibration: {lesion_volume_cv_soft_after.mean()}\n"
+    text_to_write += f"Lesion volume coefficient of variation for binary predictions before beta calibration: {lesion_volume_cv_binary_before.mean()}\n"
+    text_to_write += f"Lesion volume coefficient of variation for binary predictions after beta calibration: {lesion_volume_cv_binary_after.mean()}\n"
     out_txt_path = os.path.join(output_folder, "summary_results_evaluation.txt")
     with open(out_txt_path, "w") as f:
             f.write(text_to_write)
 
 
-
 if __name__ == "__main__":
     args = parse_args()
-    main_temperature_scaling(args.msd, args.model_path, args.o, args.smaller_changes)
+    main_extended_beta_calibration(args.msd, args.model_path, args.o, args.smaller_changes)
