@@ -198,7 +198,7 @@ def main_beta_calibration(input_msd, path_model, output_folder, smaller_changes=
         data = np.expand_dims(data, axis=0).astype(np.float32)
         label_data = np.expand_dims(label_data, axis=0).astype(np.float32)
 
-        _, logits = predictor.predict_single_npy_array(
+        _, prob_maps = predictor.predict_single_npy_array(
             input_image=data,
             # The spacings also have to be reversed to match nnUNet's conventions.
             image_properties={'spacing': img_in.dim[6:3:-1]},
@@ -206,14 +206,9 @@ def main_beta_calibration(input_msd, path_model, output_folder, smaller_changes=
             save_or_return_probabilities=True,
             # If using a model ensemble, return the logits per fold so we can average them ourselves
             return_logits_per_fold=False, 
-            return_logits = True
+            return_logits = False
         )
-        # Convert logits to torch tensor
-        logits = torch.from_numpy(logits)
-
-        # Convert logits to probabilities using softmax
-        probs = torch.nn.functional.softmax(logits, dim=0)
-        probs = probs[1].numpy()  # Get probability for lesion class
+        probs = np.where(prob_maps[1] > prob_maps[0], prob_maps[1], 0)
 
         # Add the probs and labels to the calib values
         all_calib_probs.append(probs.flatten())
@@ -287,7 +282,7 @@ def main_beta_calibration(input_msd, path_model, output_folder, smaller_changes=
             data = np.expand_dims(data, axis=0).astype(np.float32)
             label_data = np.expand_dims(label_data, axis=0).astype(np.float32)
 
-            _, logits = predictor.predict_single_npy_array(
+            _, prob_maps = predictor.predict_single_npy_array(
                 input_image=data,
                 # The spacings also have to be reversed to match nnUNet's conventions.
                 image_properties={'spacing': resamp_img.dim[6:3:-1]},
@@ -295,20 +290,23 @@ def main_beta_calibration(input_msd, path_model, output_folder, smaller_changes=
                 save_or_return_probabilities=True,
                 # If using a model ensemble, return the logits per fold so we can average them ourselves
                 return_logits_per_fold=False, 
-                return_logits = True
+                return_logits = False
             )
-            # Convert logits to torch tensor
-            logits = torch.from_numpy(logits)
+            probs = np.where(prob_maps[1] > prob_maps[0], prob_maps[1], 0)
 
-            # Convert logits to probabilities using softmax
-            probs = torch.nn.functional.softmax(logits, dim=0)
-            probs = probs[1].numpy()  # Get probability for lesion class
 
             # We also save the non-calibrated probabilities for evaluation purposes
             all_eval_probs.append(probs.flatten())
             all_eval_labels.append(label_data.flatten())
 
-            # Perform beta calibration using the fitted logistic regression coefficients
+            # Compute Dice score and lesion volume before beta calibration
+            binary_prediction_before = np.where(probs > 1e-3, 1, 0)
+            dice_before = dice_score(binary_prediction_before, label_data)
+            voxel_volume = np.prod(resamp_img.dim[6:3:-1])  # Get
+            soft_lesion_volume_before = probs.sum() * voxel_volume
+            bin_lesion_volume_before = binary_prediction_before.sum() * voxel_volume
+
+            # # Perform beta calibration using the fitted logistic regression coefficients
             eps = np.finfo(float).eps
             probs = np.clip(probs, eps, 1 - eps)
             
@@ -322,17 +320,10 @@ def main_beta_calibration(input_msd, path_model, output_folder, smaller_changes=
             # Add them to the eval calib values
             all_eval_calib_probs.append(calibrated_probs.flatten())
 
-            # Compute Dice scores before and after beta calibration
-            binary_prediction_before = np.where(probs > 0.5, 1, 0)
-            binary_prediction_after = np.where(calibrated_probs > 0.5, 1, 0)
-            dice_before = dice_score(binary_prediction_before, label_data)
+            # Compute Dice scores and lesion volume after beta calibration
+            binary_prediction_after = np.where(calibrated_probs > 1e-3, 1, 0)
             dice_after = dice_score(binary_prediction_after, label_data)
-
-            # Compute lesion volumes before and after beta calibration
-            voxel_volume = np.prod(resamp_img.dim[6:3:-1])  # Get
-            soft_lesion_volume_before = probs.sum() * voxel_volume
             soft_lesion_volume_after = calibrated_probs.sum() * voxel_volume
-            bin_lesion_volume_before = binary_prediction_before.sum() * voxel_volume
             bin_lesion_volume_after = binary_prediction_after.sum() * voxel_volume
 
             # Add everything to the results dataframe
@@ -344,24 +335,27 @@ def main_beta_calibration(input_msd, path_model, output_folder, smaller_changes=
         # Save the results dataframe after each image to avoid losing everything in case of crash
         results_df.to_csv(os.path.join(output_folder, "results_evaluation.csv"), index=False)
 
-    all_eval_probs = np.concatenate(all_eval_probs)
-    all_eval_calib_probs = np.concatenate(all_eval_calib_probs)
-    all_eval_labels = np.concatenate(all_eval_labels)
+    # # all_eval_probs = np.concatenate(all_eval_probs)
+    # all_eval_calib_probs = np.concatenate(all_eval_calib_probs)
+    # all_eval_labels = np.concatenate(all_eval_labels)
     
-    # Plot and save the calibration curves, before and after beta calibration
-    prob_true, prob_pred = calibration_curve(all_eval_labels, all_eval_probs, n_bins=20)
-    prob_true_calib, prob_pred_calib = calibration_curve(all_eval_labels, all_eval_calib_probs.flatten(), n_bins=20)
-    plt.figure(figsize=(10, 10))
-    plt.plot(prob_pred, prob_true, marker='o', label='Before beta calibration')
-    plt.plot(prob_pred_calib, prob_true_calib, marker='o', label='After beta calibration')
-    plt.plot([0, 1], [0, 1], linestyle='--', label='Perfectly Calibrated')
-    plt.xlabel('Mean Predicted Probability')
-    plt.ylabel('Fraction of Positives')
-    plt.title(f'Calibration Curve for {subject}')
-    plt.legend()
-    plt.tight_layout()
-    plt.savefig(os.path.join(output_folder, f"calibration_curve.png"))
-    plt.close()
+    # # Plot and save the calibration curves, before and after beta calibration
+    # prob_true, prob_pred = calibration_curve(all_eval_labels, all_eval_probs, n_bins=20)
+    # prob_true_calib, prob_pred_calib = calibration_curve(all_eval_labels, all_eval_calib_probs.flatten(), n_bins=20)
+    # plt.figure(figsize=(10, 10))
+    # plt.plot(prob_pred, prob_true, marker='o', label='Before beta calibration')
+    # plt.plot(prob_pred_calib, prob_true_calib, marker='o', label='After beta calibration')
+    # plt.plot([0, 1], [0, 1], linestyle='--', label='Perfectly Calibrated')
+    # plt.xlabel('Mean Predicted Probability')
+    # plt.ylabel('Fraction of Positives')
+    # plt.title(f'Calibration Curve for {subject}')
+    # plt.legend()
+    # plt.tight_layout()
+    # plt.savefig(os.path.join(output_folder, f"calibration_curve.png"))
+    # plt.close()
+
+    # # Load the results dataframe
+    # results_df = pd.read_csv(os.path.join(output_folder, "results_evaluation.csv"))
 
     # Now we evaluate the results of beta calibration:
     text_to_write = ""
@@ -375,8 +369,11 @@ def main_beta_calibration(input_msd, path_model, output_folder, smaller_changes=
     lesion_volume_cv_soft_after = lesion_volume_std_soft_after / results_df.groupby("subject")["soft_lesion_volume_after_calib"].mean()
     lesion_volume_cv_binary_before = lesion_volume_std_binary_before / results_df.groupby("subject")["bin_lesion_volume_before_calib"].mean()
     lesion_volume_cv_binary_after = lesion_volume_std_binary_after / results_df.groupby("subject")["bin_lesion_volume_after_calib"].mean()
+    # Dice score results
+    dice_before_calib = results_df.groupby("subject")["dice_before_calib"].mean()
+    dice_after_calib = results_df.groupby("subject")["dice_after_calib"].mean()
     text_to_write += "Summary of evaluation results:\n"
-    text_to_write += f"Coefficient used in beta calibration: a={a}, b={b}, c={c}\n"
+    # text_to_write += f"Coefficient used in beta calibration: a={a}, b={b}, c={c}\n"
     text_to_write += f"Lesion volume std for soft predictions before beta calibration: {lesion_volume_std_soft_before.mean()}\n"
     text_to_write += f"Lesion volume std for soft predictions after beta calibration: {lesion_volume_std_soft_after.mean()}\n"
     text_to_write += f"Lesion volume std for binary predictions before beta calibration: {lesion_volume_std_binary_before.mean()}\n"
@@ -385,6 +382,8 @@ def main_beta_calibration(input_msd, path_model, output_folder, smaller_changes=
     text_to_write += f"Lesion volume coefficient of variation for soft predictions after beta calibration: {lesion_volume_cv_soft_after.mean()}\n"
     text_to_write += f"Lesion volume coefficient of variation for binary predictions before beta calibration: {lesion_volume_cv_binary_before.mean()}\n"
     text_to_write += f"Lesion volume coefficient of variation for binary predictions after beta calibration: {lesion_volume_cv_binary_after.mean()}\n"
+    text_to_write += f"Dice score before beta calibration: {dice_before_calib.mean()}\n"
+    text_to_write += f"Dice score after beta calibration: {dice_after_calib.mean()}\n"
     out_txt_path = os.path.join(output_folder, "summary_results_evaluation.txt")
     with open(out_txt_path, "w") as f:
             f.write(text_to_write)

@@ -198,7 +198,7 @@ def main_isotonice_reg(input_msd, path_model, output_folder, smaller_changes=Fal
         data = np.expand_dims(data, axis=0).astype(np.float32)
         label_data = np.expand_dims(label_data, axis=0).astype(np.float32)
 
-        _, logits = predictor.predict_single_npy_array(
+        _, prob_maps = predictor.predict_single_npy_array(
             input_image=data,
             # The spacings also have to be reversed to match nnUNet's conventions.
             image_properties={'spacing': img_in.dim[6:3:-1]},
@@ -208,12 +208,7 @@ def main_isotonice_reg(input_msd, path_model, output_folder, smaller_changes=Fal
             return_logits_per_fold=False, 
             return_logits = True
         )
-        # Convert logits to torch tensor
-        logits = torch.from_numpy(logits)
-
-        # Convert logits to probabilities using softmax
-        probs = torch.nn.functional.softmax(logits, dim=0)
-        probs = probs[1].numpy()  # Get probability for lesion class
+        probs = np.where(prob_maps[1] > prob_maps[0], prob_maps[1], 0)
 
         # Add the probs and labels to the calib values
         all_calib_probs.append(probs.flatten())
@@ -275,7 +270,7 @@ def main_isotonice_reg(input_msd, path_model, output_folder, smaller_changes=Fal
             data = np.expand_dims(data, axis=0).astype(np.float32)
             label_data = np.expand_dims(label_data, axis=0).astype(np.float32)
 
-            _, logits = predictor.predict_single_npy_array(
+            _, prob_maps = predictor.predict_single_npy_array(
                 input_image=data,
                 # The spacings also have to be reversed to match nnUNet's conventions.
                 image_properties={'spacing': resamp_img.dim[6:3:-1]},
@@ -283,14 +278,9 @@ def main_isotonice_reg(input_msd, path_model, output_folder, smaller_changes=Fal
                 save_or_return_probabilities=True,
                 # If using a model ensemble, return the logits per fold so we can average them ourselves
                 return_logits_per_fold=False, 
-                return_logits = True
+                return_logits = False
             )
-            # Convert logits to torch tensor
-            logits = torch.from_numpy(logits)
-
-            # Convert logits to probabilities using softmax
-            probs = torch.nn.functional.softmax(logits, dim=0)
-            probs = probs[1].numpy()  # Get probability for lesion class
+            probs = np.where(prob_maps[1] > prob_maps[0], prob_maps[1], 0)
 
             # Add them to the eval calib values
             all_eval_calib_probs.append(probs.flatten())
@@ -300,8 +290,8 @@ def main_isotonice_reg(input_msd, path_model, output_folder, smaller_changes=Fal
             calibrated_probs = iso_reg.predict(probs.flatten()).reshape(probs.shape)
 
             # Compute Dice scores before and after isotonic regression
-            binary_prediction_before = np.where(probs > 0.5, 1, 0)
-            binary_prediction_after = np.where(calibrated_probs > 0.5, 1, 0)
+            binary_prediction_before = np.where(probs > 1e-3, 1, 0)
+            binary_prediction_after = np.where(calibrated_probs > 1e-3, 1, 0)
             dice_before = dice_score(binary_prediction_before, label_data)
             dice_after = dice_score(binary_prediction_after, label_data)
 
@@ -321,34 +311,34 @@ def main_isotonice_reg(input_msd, path_model, output_folder, smaller_changes=Fal
         # Save the results dataframe after each image to avoid losing everything in case of crash
         results_df.to_csv(os.path.join(output_folder, "results_evaluation.csv"), index=False)
 
-    # Concatenate all the eval calib values
-    all_eval_calib_probs = np.concatenate(all_eval_calib_probs)
-    all_eval_calib_labels = np.concatenate(all_eval_calib_labels)
-    print(f"Number of eval calib values: {len(all_eval_calib_probs)}")
+    # # Concatenate all the eval calib values
+    # all_eval_calib_probs = np.concatenate(all_eval_calib_probs)
+    # all_eval_calib_labels = np.concatenate(all_eval_calib_labels)
+    # print(f"Number of eval calib values: {len(all_eval_calib_probs)}")
 
-    # Remove prob values which are below 0.001
-    mask = all_eval_calib_probs >= 0.001
-    all_eval_calib_probs = all_eval_calib_probs[mask]
-    all_eval_calib_labels = all_eval_calib_labels[mask]
-    print(f"Number of eval calib values after removing probs < 0.001: {len(all_eval_calib_probs)}")
+    # # Remove prob values which are below 0.001
+    # mask = all_eval_calib_probs >= 0.001
+    # all_eval_calib_probs = all_eval_calib_probs[mask]
+    # all_eval_calib_labels = all_eval_calib_labels[mask]
+    # print(f"Number of eval calib values after removing probs < 0.001: {len(all_eval_calib_probs)}")
 
-    # Apply isotonic regression to calibrate probabilities
-    eval_calibrated_probs = iso_reg.predict(all_eval_calib_probs)
+    # # Apply isotonic regression to calibrate probabilities
+    # eval_calibrated_probs = iso_reg.predict(all_eval_calib_probs)
     
-    # Plot and save the calibration curves, before and after isotonic regression
-    prob_true, prob_pred = calibration_curve(all_eval_calib_labels, all_eval_calib_probs, n_bins=20)
-    prob_true_calib, prob_pred_calib = calibration_curve(all_eval_calib_labels, eval_calibrated_probs.flatten(), n_bins=20)
-    plt.figure(figsize=(10, 10))
-    plt.plot(prob_pred, prob_true, marker='o', label='Before Isotonic Regression')
-    plt.plot(prob_pred_calib, prob_true_calib, marker='o', label='After Isotonic Regression')
-    plt.plot([0, 1], [0, 1], linestyle='--', label='Perfectly Calibrated')
-    plt.xlabel('Mean Predicted Probability')
-    plt.ylabel('Fraction of Positives')
-    plt.title(f'Calibration Curve for {subject}')
-    plt.legend()
-    plt.tight_layout()
-    plt.savefig(os.path.join(output_folder, f"calibration_curve.png"))
-    plt.close()
+    # # Plot and save the calibration curves, before and after isotonic regression
+    # prob_true, prob_pred = calibration_curve(all_eval_calib_labels, all_eval_calib_probs, n_bins=20)
+    # prob_true_calib, prob_pred_calib = calibration_curve(all_eval_calib_labels, eval_calibrated_probs.flatten(), n_bins=20)
+    # plt.figure(figsize=(10, 10))
+    # plt.plot(prob_pred, prob_true, marker='o', label='Before Isotonic Regression')
+    # plt.plot(prob_pred_calib, prob_true_calib, marker='o', label='After Isotonic Regression')
+    # plt.plot([0, 1], [0, 1], linestyle='--', label='Perfectly Calibrated')
+    # plt.xlabel('Mean Predicted Probability')
+    # plt.ylabel('Fraction of Positives')
+    # plt.title(f'Calibration Curve for {subject}')
+    # plt.legend()
+    # plt.tight_layout()
+    # plt.savefig(os.path.join(output_folder, f"calibration_curve.png"))
+    # plt.close()
 
     # Now we evaluate the results of isotonic regression:
     text_to_write = ""
@@ -362,6 +352,9 @@ def main_isotonice_reg(input_msd, path_model, output_folder, smaller_changes=Fal
     lesion_volume_cv_soft_after = lesion_volume_std_soft_after / results_df.groupby("subject")["soft_lesion_volume_after_iso"].mean()
     lesion_volume_cv_binary_before = lesion_volume_std_binary_before / results_df.groupby("subject")["bin_lesion_volume_before_iso"].mean()
     lesion_volume_cv_binary_after = lesion_volume_std_binary_after / results_df.groupby("subject")["bin_lesion_volume_after_iso"].mean()
+    ## Dice before and after isotonic regression
+    dice_before_iso = results_df.groupby("subject")["dice_before_iso"].mean()
+    dice_after_iso = results_df.groupby("subject")["dice_after_iso"].mean()
     text_to_write += f"Lesion volume std for soft predictions before isotonic regression: {lesion_volume_std_soft_before.mean()}\n"
     text_to_write += f"Lesion volume std for soft predictions after isotonic regression: {lesion_volume_std_soft_after.mean()}\n"
     text_to_write += f"Lesion volume std for binary predictions before isotonic regression: {lesion_volume_std_binary_before.mean()}\n"
@@ -370,6 +363,8 @@ def main_isotonice_reg(input_msd, path_model, output_folder, smaller_changes=Fal
     text_to_write += f"Lesion volume coefficient of variation for soft predictions after isotonic regression: {lesion_volume_cv_soft_after.mean()}\n"
     text_to_write += f"Lesion volume coefficient of variation for binary predictions before isotonic regression: {lesion_volume_cv_binary_before.mean()}\n"
     text_to_write += f"Lesion volume coefficient of variation for binary predictions after isotonic regression: {lesion_volume_cv_binary_after.mean()}\n"
+    text_to_write += f"Dice before isotonic regression: {dice_before_iso.mean()}\n"
+    text_to_write += f"Dice after isotonic regression: {dice_after_iso.mean()}\n"
     out_txt_path = os.path.join(output_folder, "summary_results_evaluation.txt")
     with open(out_txt_path, "w") as f:
             f.write(text_to_write)
