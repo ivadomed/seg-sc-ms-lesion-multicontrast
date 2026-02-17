@@ -6,6 +6,7 @@ Input:
     --model-path: Path to the nnUNet model to use for prediction
     -o : Folder to save the calibrated predictions
     --smaller-changes: If specified, only apply small downsampling changes
+    --calib-model: Optional path to a pre-trained extended beta calibration model. If not provided, the script will train a new model using the calibration set.
 
 Author: Pierre-Louis Benveniste
 """
@@ -45,6 +46,7 @@ def parse_args():
     parser.add_argument("--model-path", required=True, type=str, help="Path to the nnUNet model to use for prediction")
     parser.add_argument("-o", required=True, type=str, help="Folder to save the calibrated predictions")
     parser.add_argument("--smaller-changes", action="store_true", help="If specified, only apply small downsampling changes")
+    parser.add_argument("--calib-model", type=str, help="Optional path to a pre-trained extended beta calibration model.")
     return parser.parse_args()
 
 
@@ -149,7 +151,7 @@ class ExtendedBetaCalibration(Module):
         return torch.sigmoid(output)
 
 
-def main_extended_beta_calibration(input_msd, path_model, output_folder, smaller_changes=False):
+def main_extended_beta_calibration(input_msd, path_model, output_folder, smaller_changes=False, calib_model_path=None):
 
     # Build the output folder
     os.makedirs(output_folder, exist_ok=True)
@@ -174,6 +176,11 @@ def main_extended_beta_calibration(input_msd, path_model, output_folder, smaller
     calib_labels = labels[:200]
     eval_images = images[200:]
     eval_labels = labels[200:]
+
+    if calib_model_path is not None:
+        eval_images = images[200:210]
+        eval_labels = labels[200:210]
+
 
     # save the list of images used for calibration and evaluation in the output folder
     with open(os.path.join(output_folder, "calib_images.txt"), "w") as f:
@@ -200,101 +207,115 @@ def main_extended_beta_calibration(input_msd, path_model, output_folder, smaller
                                 (0.975, 1.000, 0.975), (0.95, 1.00, 0.95), (0.925, 1.000, 0.925), (0.9, 1.0, 0.9),
                                 (1.000, 0.975, 0.975), (1.00, 0.95, 0.95), (1.000, 0.925, 0.925), (1.0, 0.9, 0.9),
                                 ]
+    if calib_model_path is not None:
+        downsampling_factors = [(1.0, 1.0, 1.0)]
 
-    # Initialize the training of the extended beta calibration model
-    calib_model = ExtendedBetaCalibration(k=7).cuda()
-    optimizer = torch.optim.LBFGS(calib_model.parameters(), lr=0.01, max_iter=20)
-    criterion = torch.nn.BCELoss()
+    if calib_model_path is None:
 
-    # Pre-collect data for training (working on slices to save memory)
-    # Extended beta needs full spatial context, so don't flatten voxels yet
-    calib_model.train()
+        # Initialize the training of the extended beta calibration model
+        calib_model = ExtendedBetaCalibration(k=7).cuda()
+        optimizer = torch.optim.LBFGS(calib_model.parameters(), lr=0.01, max_iter=20)
+        criterion = torch.nn.BCELoss()
 
-    for img, label in tqdm(zip(calib_images, calib_labels), desc="Running lesion segmentation"):
-        print(f"Processing image: {img}")
-        subject = img.split("/")[-1].replace(".nii.gz","")
+        # Pre-collect data for training (working on slices to save memory)
+        # Extended beta needs full spatial context, so don't flatten voxels yet
+        calib_model.train()
 
-        orig_orientation = get_orientation(Image(img))
-        model_orientation = "RPI"
+        for img, label in tqdm(zip(calib_images, calib_labels), desc="Running lesion segmentation"):
+            print(f"Processing image: {img}")
+            subject = img.split("/")[-1].replace(".nii.gz","")
 
-        # Reorient the image to model orientation if not already
-        img_in = Image(img)
-        label_in = Image(label)
-        if orig_orientation != model_orientation:
-            img_in.change_orientation(model_orientation)
-            label_in.change_orientation(model_orientation)
+            orig_orientation = get_orientation(Image(img))
+            model_orientation = "RPI"
+
+            # Reorient the image to model orientation if not already
+            img_in = Image(img)
+            label_in = Image(label)
+            if orig_orientation != model_orientation:
+                img_in.change_orientation(model_orientation)
+                label_in.change_orientation(model_orientation)
+            
+            data = img_in.data.transpose([2, 1, 0])
+            label_data = label_in.data.transpose([2, 1, 0])
+            data = np.expand_dims(data, axis=0).astype(np.float32)
+            label_data = np.expand_dims(label_data, axis=0).astype(np.float32)
+
+            _, prob_maps = predictor.predict_single_npy_array(
+                input_image=data,
+                # The spacings also have to be reversed to match nnUNet's conventions.
+                image_properties={'spacing': img_in.dim[6:3:-1]},
+                # Save the probability maps if specified
+                save_or_return_probabilities=True,
+                # If using a model ensemble, return the logits per fold so we can average them ourselves
+                return_logits_per_fold=False, 
+                return_logits = False
+            )
+            probs = np.where(prob_maps[1] > prob_maps[0], prob_maps[1], 0)
+
+            # Convert your probs (H, W, D) to (D, 1, H, W)
+            probs_torch = torch.from_numpy(probs).float() 
+            # Move the depth/slices dimension to the front
+            probs_torch = probs_torch.permute(2, 0, 1) 
+            # Add the 'Channel' dimension required by Conv2d
+            probs_torch = probs_torch.unsqueeze(1) 
+
+            # 2. Move input to the GPU to match the model weights
+            probs_torch = probs_torch.cuda() 
+
+            # 3. Now run the calibration model
+            calibrated_output = calib_model(probs_torch)
+
+            print(f"Calibrated output shape: {calibrated_output.shape}, Label shape: {label_data.shape}")
+
+            # Format the labels to match the output shape of the model (D, 1, H, W)
+            targets = torch.from_numpy(label_data).float()
+            targets = targets.permute(3, 0, 1, 2)
+            targets = targets.cuda()  # Add channel dimension and move to GPU
+
+            print(f"Calibrated output shape: {calibrated_output.shape}, Label shape: {targets.shape}")
+
+            def closure():
+                optimizer.zero_grad()
+                # Forward pass: leveraging spatial information via Conv2d kernels 
+                output = calib_model(probs_torch)
+                # Binary Cross-Entropy (BCE) is used for optimization [cite: 1198]
+                loss = criterion(output, targets)
+                loss.backward()
+                return loss
+
+            # Pass the function 'closure', not the 'loss' tensor
+            optimizer.step(closure)
         
-        data = img_in.data.transpose([2, 1, 0])
-        label_data = label_in.data.transpose([2, 1, 0])
-        data = np.expand_dims(data, axis=0).astype(np.float32)
-        label_data = np.expand_dims(label_data, axis=0).astype(np.float32)
+        # Get the learned parameters from the calibration model
+        a = calib_model.a.weight.detach().cpu().numpy().flatten()[0]
+        b = calib_model.b.weight.detach().cpu().numpy().flatten()[0]
+        c = calib_model.c.detach().cpu().numpy().flatten()[0]
+        print(f"Learned parameters for beta calibration: a={a}, b={b}, c={c}")
 
-        _, prob_maps = predictor.predict_single_npy_array(
-            input_image=data,
-            # The spacings also have to be reversed to match nnUNet's conventions.
-            image_properties={'spacing': img_in.dim[6:3:-1]},
-            # Save the probability maps if specified
-            save_or_return_probabilities=True,
-            # If using a model ensemble, return the logits per fold so we can average them ourselves
-            return_logits_per_fold=False, 
-            return_logits = False
-        )
-        probs = np.where(prob_maps[1] > prob_maps[0], prob_maps[1], 0)
+        # save the trained model
+        torch.save(calib_model.state_dict(), os.path.join(output_folder, "extended_beta_calibration_model.pth"))
 
-        # Convert your probs (H, W, D) to (D, 1, H, W)
-        probs_torch = torch.from_numpy(probs).float() 
-        # Move the depth/slices dimension to the front
-        probs_torch = probs_torch.permute(2, 0, 1) 
-        # Add the 'Channel' dimension required by Conv2d
-        probs_torch = probs_torch.unsqueeze(1) 
+        # # Initialize all eval calib values
+        # all_eval_calib_probs = []
+        # all_eval_probs = []
+        # all_eval_labels = []
 
-        # 2. Move input to the GPU to match the model weights
-        probs_torch = probs_torch.cuda() 
+        # Now we switch to evaluation mode for the calibration model
+        calib_model.eval()
 
-        # 3. Now run the calibration model
-        calibrated_output = calib_model(probs_torch)
-
-        print(f"Calibrated output shape: {calibrated_output.shape}, Label shape: {label_data.shape}")
-
-        # Format the labels to match the output shape of the model (D, 1, H, W)
-        targets = torch.from_numpy(label_data).float()
-        targets = targets.permute(3, 0, 1, 2)
-        targets = targets.cuda()  # Add channel dimension and move to GPU
-
-        print(f"Calibrated output shape: {calibrated_output.shape}, Label shape: {targets.shape}")
-
-        def closure():
-            optimizer.zero_grad()
-            # Forward pass: leveraging spatial information via Conv2d kernels 
-            output = calib_model(probs_torch)
-            # Binary Cross-Entropy (BCE) is used for optimization [cite: 1198]
-            loss = criterion(output, targets)
-            loss.backward()
-            return loss
-
-        # Pass the function 'closure', not the 'loss' tensor
-        optimizer.step(closure)
-    
     results_df = pd.DataFrame(columns=["subject", "resamp_factor", "dice_before_calib", "dice_after_calib",
-                                       "soft_lesion_volume_after_calib", "soft_lesion_volume_before_calib",
-                                       "bin_lesion_volume_after_calib", "bin_lesion_volume_before_calib"])
+                                        "soft_lesion_volume_after_calib", "soft_lesion_volume_before_calib",
+                                        "bin_lesion_volume_after_calib", "bin_lesion_volume_before_calib"])
     
-    # Get the learned parameters from the calibration model
-    a = calib_model.a.weight.detach().cpu().numpy().flatten()[0]
-    b = calib_model.b.weight.detach().cpu().numpy().flatten()[0]
-    c = calib_model.c.detach().cpu().numpy().flatten()[0]
-    print(f"Learned parameters for beta calibration: a={a}, b={b}, c={c}")
-
-    # save the trained model
-    torch.save(calib_model.state_dict(), os.path.join(output_folder, "extended_beta_calibration_model.pth"))
-
-    # Initialize all eval calib values
-    all_eval_calib_probs = []
-    all_eval_probs = []
-    all_eval_labels = []
-
-    # Now we switch to evaluation mode for the calibration model
-    calib_model.eval()
+    if calib_model_path is not None:
+        calib_model = ExtendedBetaCalibration(k=7).cuda()
+        # Load the pre-trained calibration model
+        calib_model.load_state_dict(torch.load(calib_model_path))
+        a = calib_model.a.weight.detach().cpu().numpy().flatten()[0]
+        b = calib_model.b.weight.detach().cpu().numpy().flatten()[0]
+        c = calib_model.c.detach().cpu().numpy().flatten()[0]
+        print(f"Learned parameters for beta calibration: a={a}, b={b}, c={c}")
+        calib_model.eval()
 
     # Now we apply this to the images of the evaluation set, and save the calibrated probabilities
     for img, label in tqdm(zip(eval_images, eval_labels), desc="Running lesion segmentation on evaluation set"):
@@ -353,14 +374,14 @@ def main_extended_beta_calibration(input_msd, path_model, output_folder, smaller
 
             print(f"Calibrated output shape: {calibrated_probs.shape}, Label shape: {label_data.shape}")
 
-            # Store values for calibration curve
-            all_eval_probs.append(probs.flatten())
-            all_eval_labels.append(label_data.flatten())
-            all_eval_calib_probs.append(calibrated_probs.flatten())
+            # # Store values for calibration curve
+            # all_eval_probs.append(probs.flatten())
+            # all_eval_labels.append(label_data.flatten())
+            # all_eval_calib_probs.append(calibrated_probs.flatten())
 
             # Compute Dice scores before and after beta calibration
-            binary_prediction_before = np.where(probs > 1e-3, 1, 0)
-            binary_prediction_after = np.where(calibrated_probs > 1e-3, 1, 0)
+            binary_prediction_before = np.where(probs > 0.5, 1, 0)
+            binary_prediction_after = np.where(calibrated_probs > 0.5, 1, 0)
             dice_before = dice_score(binary_prediction_before, label_data)
             dice_after = dice_score(binary_prediction_after, label_data)
 
@@ -379,6 +400,56 @@ def main_extended_beta_calibration(input_msd, path_model, output_folder, smaller
         
         # Save the results dataframe for this subject
         results_df.to_csv(os.path.join(output_folder, f"results_calibrated.csv"), index=False)
+
+        # Print a slice where the GT lesion are visible
+        if calib_model_path is not None:
+            label_data = label_data.reshape(probs.shape)
+            # Print name and shape
+            print(f"Subject: {subject}, Image shape: {probs.shape}, Label shape: {label_data.shape}")
+            if "PSIR" in subject or "STIR" in subject:
+                # Extract a slice where the GT lesion is visible: we take the middle slice of the slices where there are lesions
+                slices_with_lesion = np.where(label_data.sum(axis=(0,1)) > 0)[0]
+                if len(slices_with_lesion) == 0:
+                    print(f"No lesion found in the label for subject {subject}, skipping visualization.")
+                    continue
+                slice_idx = slices_with_lesion[len(slices_with_lesion) // 2]
+                plt.figure(figsize=(15, 5))
+                plt.subplot(1, 3, 1)
+                plt.imshow(probs[:, :, slice_idx],cmap='viridis', vmin=0, vmax=1)
+                plt.colorbar()
+                plt.title('Soft Prediction Before Beta Calibration')
+                plt.subplot(1, 3, 2)
+                plt.imshow(calibrated_probs[:, :, slice_idx], cmap='viridis', vmin=0, vmax=1)
+                plt.colorbar()
+                plt.title('Soft Prediction After Beta Calibration')
+                plt.subplot(1, 3, 3)
+                plt.imshow(label_data[:, :, slice_idx], cmap='gray')
+                plt.title('Ground Truth')
+                plt.tight_layout()
+                plt.savefig(os.path.join(output_folder, f"{subject}_slice_{slice_idx}.png"))
+                plt.close()
+            else:
+                # We plot and axial slice with a lesion
+                slices_with_lesion = np.where(label_data.sum(axis=(0,1)) > 0)[0]
+                if len(slices_with_lesion) == 0:
+                    print(f"No lesion found in the label for subject {subject}, skipping visualization.")
+                    continue
+                slice_idx = slices_with_lesion[len(slices_with_lesion) // 2]
+                plt.figure(figsize=(15, 5))
+                plt.subplot(1, 3, 1)
+                plt.imshow(probs[:, slice_idx, :], cmap='viridis', vmin=0, vmax=1)
+                plt.colorbar()
+                plt.title('Soft Prediction Before Beta Calibration')
+                plt.subplot(1, 3, 2)
+                plt.imshow(calibrated_probs[slice_idx, :, :], cmap='viridis', vmin=0, vmax=1)
+                plt.colorbar()
+                plt.title('Soft Prediction After Beta Calibration')
+                plt.subplot(1, 3, 3)
+                plt.imshow(label_data[slice_idx, :, :], cmap='gray')
+                plt.title('Ground Truth')
+                plt.tight_layout()
+                plt.savefig(os.path.join(output_folder, f"{subject}_slice_{slice_idx}.png"))
+                plt.close()
 
     # all_eval_probs = np.concatenate(all_eval_probs)
     # all_eval_calib_probs = np.concatenate(all_eval_calib_probs)
@@ -413,7 +484,7 @@ def main_extended_beta_calibration(input_msd, path_model, output_folder, smaller
     lesion_volume_cv_binary_after = lesion_volume_std_binary_after / results_df.groupby("subject")["bin_lesion_volume_after_calib"].mean()
     # Dice before and after beta calibration
     dice_before_calib = results_df.groupby("subject")["dice_before_calib"].mean()
-    dice_after_calib = results_df.groupby("subject")["dice_after_calib"].mean
+    dice_after_calib = results_df.groupby("subject")["dice_after_calib"].mean()
     text_to_write += "Summary of evaluation results:\n"
     text_to_write += f"Coefficient used in beta calibration: a={a}, b={b}, c={c}\n"
     text_to_write += f"Lesion volume std for soft predictions before beta calibration: {lesion_volume_std_soft_before.mean()}\n"
@@ -434,4 +505,4 @@ def main_extended_beta_calibration(input_msd, path_model, output_folder, smaller
 
 if __name__ == "__main__":
     args = parse_args()
-    main_extended_beta_calibration(args.msd, args.model_path, args.o, args.smaller_changes)
+    main_extended_beta_calibration(args.msd, args.model_path, args.o, args.smaller_changes, args.calib_model)

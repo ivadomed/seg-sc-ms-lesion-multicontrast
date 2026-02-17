@@ -6,6 +6,7 @@ Input:
     --model-path: Path to the nnUNet model to use for prediction
     -o : Folder to save the calibrated predictions
     --smaller-changes: If specified, only apply small downsampling changes
+    --apply-iso: if specified, apply isotonic regression do not perform training
 
 Author: Pierre-Louis Benveniste
 """
@@ -45,6 +46,7 @@ def parse_args():
     parser.add_argument("--model-path", required=True, type=str, help="Path to the nnUNet model to use for prediction")
     parser.add_argument("-o", required=True, type=str, help="Folder to save the calibrated predictions")
     parser.add_argument("--smaller-changes", action="store_true", help="If specified, only apply small downsampling changes")
+    parser.add_argument("--path-iso-reg", type=str, help="Path to the calibrated isotonic regression object. If specified, apply isotonic regression do not perform training")
     return parser.parse_args()
 
 
@@ -123,7 +125,7 @@ def resample_img(image, resamp_factor, interpolation='linear'):
     return resamp_img
 
 
-def main_isotonice_reg(input_msd, path_model, output_folder, smaller_changes=False):
+def main_isotonice_reg(input_msd, path_model, output_folder, smaller_changes=False, path_iso=None):
 
     # Build the output folder
     os.makedirs(output_folder, exist_ok=True)
@@ -148,6 +150,10 @@ def main_isotonice_reg(input_msd, path_model, output_folder, smaller_changes=Fal
     calib_labels = labels[:200]
     eval_images = images[200:]
     eval_labels = labels[200:]
+
+    if path_iso is not None:
+        eval_images = images[200:210]
+        eval_labels = labels[200:210]
 
     # save the list of images used for calibration and evaluation in the output folder
     with open(os.path.join(output_folder, "calib_images.txt"), "w") as f:
@@ -174,64 +180,73 @@ def main_isotonice_reg(input_msd, path_model, output_folder, smaller_changes=Fal
                                 (0.975, 1.000, 0.975), (0.95, 1.00, 0.95), (0.925, 1.000, 0.925), (0.9, 1.0, 0.9),
                                 (1.000, 0.975, 0.975), (1.00, 0.95, 0.95), (1.000, 0.925, 0.925), (1.0, 0.9, 0.9),
                                 ]
+        
+    if path_iso is not None:
+        downsampling_factors = [(1.0, 1.0, 1.0)]
     
     # Initializ the calib values
     all_calib_probs = []
     all_calib_labels = []
 
-    for img, label in tqdm(zip(calib_images, calib_labels), desc="Running lesion segmentation"):
-        print(f"Processing image: {img}")
-        subject = img.split("/")[-1].replace(".nii.gz","")
+    if path_iso is None:
+        for img, label in tqdm(zip(calib_images, calib_labels), desc="Running lesion segmentation"):
+            print(f"Processing image: {img}")
+            subject = img.split("/")[-1].replace(".nii.gz","")
 
-        orig_orientation = get_orientation(Image(img))
-        model_orientation = "RPI"
+            orig_orientation = get_orientation(Image(img))
+            model_orientation = "RPI"
 
-        # Reorient the image to model orientation if not already
-        img_in = Image(img)
-        label_in = Image(label)
-        if orig_orientation != model_orientation:
-            img_in.change_orientation(model_orientation)
-            label_in.change_orientation(model_orientation)
+            # Reorient the image to model orientation if not already
+            img_in = Image(img)
+            label_in = Image(label)
+            if orig_orientation != model_orientation:
+                img_in.change_orientation(model_orientation)
+                label_in.change_orientation(model_orientation)
+            
+            data = img_in.data.transpose([2, 1, 0])
+            label_data = label_in.data.transpose([2, 1, 0])
+            data = np.expand_dims(data, axis=0).astype(np.float32)
+            label_data = np.expand_dims(label_data, axis=0).astype(np.float32)
+
+            _, prob_maps = predictor.predict_single_npy_array(
+                input_image=data,
+                # The spacings also have to be reversed to match nnUNet's conventions.
+                image_properties={'spacing': img_in.dim[6:3:-1]},
+                # Save the probability maps if specified
+                save_or_return_probabilities=True,
+                # If using a model ensemble, return the logits per fold so we can average them ourselves
+                return_logits_per_fold=False, 
+                return_logits = True
+            )
+            probs = np.where(prob_maps[1] > prob_maps[0], prob_maps[1], 0)
+
+            # Add the probs and labels to the calib values
+            all_calib_probs.append(probs.flatten())
+            all_calib_labels.append(label_data.flatten())
+
+        # Concatenate all the calib values
+        all_calib_probs = np.concatenate(all_calib_probs)
+        all_calib_labels = np.concatenate(all_calib_labels)
+        print(f"Number of calib values: {len(all_calib_probs)}")
         
-        data = img_in.data.transpose([2, 1, 0])
-        label_data = label_in.data.transpose([2, 1, 0])
-        data = np.expand_dims(data, axis=0).astype(np.float32)
-        label_data = np.expand_dims(label_data, axis=0).astype(np.float32)
+        # Remove prob values which are below 0.01
+        mask = all_calib_probs >= 0.001
+        all_calib_probs = all_calib_probs[mask]
+        all_calib_labels = all_calib_labels[mask]
+        print(f"Number of calib values after removing probs < 0.01: {len(all_calib_probs)}")
 
-        _, prob_maps = predictor.predict_single_npy_array(
-            input_image=data,
-            # The spacings also have to be reversed to match nnUNet's conventions.
-            image_properties={'spacing': img_in.dim[6:3:-1]},
-            # Save the probability maps if specified
-            save_or_return_probabilities=True,
-            # If using a model ensemble, return the logits per fold so we can average them ourselves
-            return_logits_per_fold=False, 
-            return_logits = True
-        )
-        probs = np.where(prob_maps[1] > prob_maps[0], prob_maps[1], 0)
+        # Fit isotonic regression
+        iso_reg = IsotonicRegression(out_of_bounds='clip')
+        iso_reg.fit(all_calib_probs, all_calib_labels)
 
-        # Add the probs and labels to the calib values
-        all_calib_probs.append(probs.flatten())
-        all_calib_labels.append(label_data.flatten())
+        # save the isotonic regression model using joblib
+        with open(os.path.join(output_folder, 'isotonic_reg_model.pkl'),'wb') as f:
+            pickle.dump(iso_reg, f)
 
-    # Concatenate all the calib values
-    all_calib_probs = np.concatenate(all_calib_probs)
-    all_calib_labels = np.concatenate(all_calib_labels)
-    print(f"Number of calib values: {len(all_calib_probs)}")
-    
-    # Remove prob values which are below 0.01
-    mask = all_calib_probs >= 0.001
-    all_calib_probs = all_calib_probs[mask]
-    all_calib_labels = all_calib_labels[mask]
-    print(f"Number of calib values after removing probs < 0.01: {len(all_calib_probs)}")
-
-    # Fit isotonic regression
-    iso_reg = IsotonicRegression(out_of_bounds='clip')
-    iso_reg.fit(all_calib_probs, all_calib_labels)
-
-    # save the isotonic regression model using joblib
-    with open(os.path.join(output_folder, 'isotonic_reg_model.pkl'),'wb') as f:
-        pickle.dump(iso_reg, f)
+    if path_iso is not None:
+        # Load the isotonic regression model using joblib
+        with open(path_iso,'rb') as f:
+            iso_reg = pickle.load(f)
 
     # Now we move to the evaluation set
     # Initialize eval calib values
@@ -308,6 +323,55 @@ def main_isotonice_reg(input_msd, path_model, output_folder, smaller_changes=Fal
                                         "bin_lesion_volume_after_iso": [bin_lesion_volume_after], "bin_lesion_volume_before_iso": [bin_lesion_volume_before]})
             results_df = pd.concat([results_df, new_line], ignore_index=True)
 
+        # Print a slice where the GT lesion are visible
+        if path_iso is not None:
+            label_data = label_data.reshape(probs.shape)
+            # Print name and shape
+            print(f"Subject: {subject}, Image shape: {probs.shape}, Label shape: {label_data.shape}")
+            if "PSIR" or "STIR" in subject:
+                # Extract a slice where the GT lesion is visible: we take the middle slice of the slices where there are lesions
+                slices_with_lesion = np.where(label_data.sum(axis=(0,1)) > 0)[0]
+                if len(slices_with_lesion) == 0:
+                    print(f"No lesion found in the label for subject {subject}, skipping visualization.")
+                    continue
+                slice_idx = slices_with_lesion[len(slices_with_lesion) // 2]
+                plt.figure(figsize=(15, 5))
+                plt.subplot(1, 3, 1)
+                plt.imshow(probs[:, :, slice_idx],cmap='viridis', vmin=0, vmax=1)
+                plt.colorbar()
+                plt.title('Soft Prediction Before Isotonic Regression')
+                plt.subplot(1, 3, 2)
+                plt.imshow(calibrated_probs[:, :, slice_idx], cmap='viridis', vmin=0, vmax=1)
+                plt.colorbar()
+                plt.title('Soft Prediction After Isotonic Regression')
+                plt.subplot(1, 3, 3)
+                plt.imshow(label_data[:, :, slice_idx], cmap='gray')
+                plt.title('Ground Truth')
+                plt.tight_layout()
+                plt.savefig(os.path.join(output_folder, f"{subject}_slice_{slice_idx}.png"))
+                plt.close()
+            else:
+                # We plot and axial slice with a lesion
+                slices_with_lesion = np.where(label_data.sum(axis=(0,1)) > 0)[0]
+                if len(slices_with_lesion) == 0:
+                    print(f"No lesion found in the label for subject {subject}, skipping visualization.")
+                    continue
+                slice_idx = slices_with_lesion[len(slices_with_lesion) // 2]
+                plt.figure(figsize=(15, 5))
+                plt.subplot(1, 3, 1)
+                plt.imshow(probs[:, slice_idx, :], cmap='viridis', vmin=0, vmax=1)
+                plt.colorbar()
+                plt.title('Soft Prediction Before Isotonic Regression')
+                plt.subplot(1, 3, 2)
+                plt.imshow(calibrated_probs[slice_idx, :, :], cmap='viridis', vmin=0, vmax=1)
+                plt.colorbar()
+                plt.title('Soft Prediction After Isotonic Regression')
+                plt.subplot(1, 3, 3)
+                plt.imshow(label_data[slice_idx, :, :], cmap='gray')
+                plt.title('Ground Truth')
+                plt.tight_layout()
+                plt.savefig(os.path.join(output_folder, f"{subject}_slice_{slice_idx}.png"))
+                plt.close()
         # Save the results dataframe after each image to avoid losing everything in case of crash
         results_df.to_csv(os.path.join(output_folder, "results_evaluation.csv"), index=False)
 
@@ -373,4 +437,4 @@ def main_isotonice_reg(input_msd, path_model, output_folder, smaller_changes=Fal
 
 if __name__ == "__main__":
     args = parse_args()
-    main_isotonice_reg(args.msd, args.model_path, args.o, args.smaller_changes)
+    main_isotonice_reg(args.msd, args.model_path, args.o, args.smaller_changes, args.path_iso_reg)

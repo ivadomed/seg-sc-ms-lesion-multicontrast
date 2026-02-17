@@ -6,6 +6,7 @@ Input:
     --model-path: Path to the nnUNet model to use for prediction
     -o : Folder to save the calibrated predictions
     --smaller-changes: If specified, only apply small downsampling changes
+    --beta-reg-path: If specified, load beta regression model and apply it to the evaluation set without fitting it on the calibration set.
 
 Author: Pierre-Louis Benveniste
 """
@@ -45,6 +46,7 @@ def parse_args():
     parser.add_argument("--model-path", required=True, type=str, help="Path to the nnUNet model to use for prediction")
     parser.add_argument("-o", required=True, type=str, help="Folder to save the calibrated predictions")
     parser.add_argument("--smaller-changes", action="store_true", help="If specified, only apply small downsampling changes")
+    parser.add_argument("--beta-reg-path", type=str, help="If specified, load beta regression model and apply it to the evaluation set without fitting it on the calibration set.")
     return parser.parse_args()
 
 
@@ -123,7 +125,7 @@ def resample_img(image, resamp_factor, interpolation='linear'):
     return resamp_img
 
 
-def main_beta_calibration(input_msd, path_model, output_folder, smaller_changes=False):
+def main_beta_calibration(input_msd, path_model, output_folder, smaller_changes=False, beta_reg_path=None):
 
     # Build the output folder
     os.makedirs(output_folder, exist_ok=True)
@@ -148,6 +150,10 @@ def main_beta_calibration(input_msd, path_model, output_folder, smaller_changes=
     calib_labels = labels[:200]
     eval_images = images[200:]
     eval_labels = labels[200:]
+
+    if beta_reg_path is not None:
+        eval_images = images[200:210]
+        eval_labels = labels[200:210]
 
     # save the list of images used for calibration and evaluation in the output folder
     with open(os.path.join(output_folder, "calib_images.txt"), "w") as f:
@@ -175,84 +181,98 @@ def main_beta_calibration(input_msd, path_model, output_folder, smaller_changes=
                                 (1.000, 0.975, 0.975), (1.00, 0.95, 0.95), (1.000, 0.925, 0.925), (1.0, 0.9, 0.9),
                                 ]
 
+    if beta_reg_path is not None:
+        downsampling_factors = [(1.0, 1.0, 1.0)]
+
     # Initializ the calib values
     all_calib_probs = []
     all_calib_labels = []
 
-    for img, label in tqdm(zip(calib_images, calib_labels), desc="Running lesion segmentation"):
-        print(f"Processing image: {img}")
-        subject = img.split("/")[-1].replace(".nii.gz","")
+    if beta_reg_path is None:
+        for img, label in tqdm(zip(calib_images, calib_labels), desc="Running lesion segmentation"):
+            print(f"Processing image: {img}")
+            subject = img.split("/")[-1].replace(".nii.gz","")
 
-        orig_orientation = get_orientation(Image(img))
-        model_orientation = "RPI"
+            orig_orientation = get_orientation(Image(img))
+            model_orientation = "RPI"
 
-        # Reorient the image to model orientation if not already
-        img_in = Image(img)
-        label_in = Image(label)
-        if orig_orientation != model_orientation:
-            img_in.change_orientation(model_orientation)
-            label_in.change_orientation(model_orientation)
+            # Reorient the image to model orientation if not already
+            img_in = Image(img)
+            label_in = Image(label)
+            if orig_orientation != model_orientation:
+                img_in.change_orientation(model_orientation)
+                label_in.change_orientation(model_orientation)
+            
+            data = img_in.data.transpose([2, 1, 0])
+            label_data = label_in.data.transpose([2, 1, 0])
+            data = np.expand_dims(data, axis=0).astype(np.float32)
+            label_data = np.expand_dims(label_data, axis=0).astype(np.float32)
+
+            _, prob_maps = predictor.predict_single_npy_array(
+                input_image=data,
+                # The spacings also have to be reversed to match nnUNet's conventions.
+                image_properties={'spacing': img_in.dim[6:3:-1]},
+                # Save the probability maps if specified
+                save_or_return_probabilities=True,
+                # If using a model ensemble, return the logits per fold so we can average them ourselves
+                return_logits_per_fold=False, 
+                return_logits = False
+            )
+            probs = np.where(prob_maps[1] > prob_maps[0], prob_maps[1], 0)
+
+            # Add the probs and labels to the calib values
+            all_calib_probs.append(probs.flatten())
+            all_calib_labels.append(label_data.flatten())
         
-        data = img_in.data.transpose([2, 1, 0])
-        label_data = label_in.data.transpose([2, 1, 0])
-        data = np.expand_dims(data, axis=0).astype(np.float32)
-        label_data = np.expand_dims(label_data, axis=0).astype(np.float32)
+        # Concatenate all the calib values
+        all_calib_probs = np.concatenate(all_calib_probs)
+        all_calib_labels = np.concatenate(all_calib_labels)
+        print(f"Number of calib values: {len(all_calib_probs)}")
 
-        _, prob_maps = predictor.predict_single_npy_array(
-            input_image=data,
-            # The spacings also have to be reversed to match nnUNet's conventions.
-            image_properties={'spacing': img_in.dim[6:3:-1]},
-            # Save the probability maps if specified
-            save_or_return_probabilities=True,
-            # If using a model ensemble, return the logits per fold so we can average them ourselves
-            return_logits_per_fold=False, 
-            return_logits = False
-        )
-        probs = np.where(prob_maps[1] > prob_maps[0], prob_maps[1], 0)
+        # 1. Transform scores into log-space features
+        # We add a small epsilon to avoid log(0) or log(1) issues
+        eps = np.finfo(float).eps
+        all_calib_probs = np.clip(all_calib_probs, eps, 1 - eps)
+        
+        s_prime = np.log(all_calib_probs)                 # ln(s) 
+        s_double_prime = -np.log(1 - all_calib_probs)      # -ln(1-s) 
+        
+        # 2. Reshape for bivariate logistic regression [cite: 322, 332]
+        X = np.column_stack((s_prime, s_double_prime))
+        
+        # 3. Fit Logistic Regression [cite: 230, 291]
+        # Note: If you want to strictly enforce monotonicity, 
+        # you must ensure coefficients a and b are >= 0[cite: 249, 336].
+        lr = LogisticRegression(solver='lbfgs')
+        lr.fit(X, all_calib_labels)
 
-        # Add the probs and labels to the calib values
-        all_calib_probs.append(probs.flatten())
-        all_calib_labels.append(label_data.flatten())
-    
-    # Concatenate all the calib values
-    all_calib_probs = np.concatenate(all_calib_probs)
-    all_calib_labels = np.concatenate(all_calib_labels)
-    print(f"Number of calib values: {len(all_calib_probs)}")
+        # save the isotonic regression model using joblib
+        with open(os.path.join(output_folder, 'beta_calib_model.pkl'),'wb') as f:
+            pickle.dump(lr, f)
+        
+        a = lr.coef_[0][0]
+        b = lr.coef_[0][1]
+        c = lr.intercept_[0]
 
-    # 1. Transform scores into log-space features
-    # We add a small epsilon to avoid log(0) or log(1) issues
-    eps = np.finfo(float).eps
-    all_calib_probs = np.clip(all_calib_probs, eps, 1 - eps)
-    
-    s_prime = np.log(all_calib_probs)                 # ln(s) 
-    s_double_prime = -np.log(1 - all_calib_probs)      # -ln(1-s) 
-    
-    # 2. Reshape for bivariate logistic regression [cite: 322, 332]
-    X = np.column_stack((s_prime, s_double_prime))
-    
-    # 3. Fit Logistic Regression [cite: 230, 291]
-    # Note: If you want to strictly enforce monotonicity, 
-    # you must ensure coefficients a and b are >= 0[cite: 249, 336].
-    lr = LogisticRegression(solver='lbfgs')
-    lr.fit(X, all_calib_labels)
+        print(f"Fitted logistic regression coefficients: a={a}, b={b}, c={c}")
 
-    # save the isotonic regression model using joblib
-    with open(os.path.join(output_folder, 'beta_calib_model.pkl'),'wb') as f:
-        pickle.dump(lr, f)
-    
-    a = lr.coef_[0][0]
-    b = lr.coef_[0][1]
-    c = lr.intercept_[0]
+    if beta_reg_path is not None:
+        # Load the beta regression model
+        with open(beta_reg_path, 'rb') as f:
+            lr = pickle.load(f)
+        a = lr.coef_[0][0]
+        b = lr.coef_[0][1]
+        c = lr.intercept_[0]
+        print(f"Loaded logistic regression coefficients: a={a}, b={b}, c={c}")
 
-    print(f"Fitted logistic regression coefficients: a={a}, b={b}, c={c}")
     results_df = pd.DataFrame(columns=["subject", "resamp_factor", "dice_before_calib", "dice_after_calib",
                                        "soft_lesion_volume_after_calib", "soft_lesion_volume_before_calib",
                                        "bin_lesion_volume_after_calib", "bin_lesion_volume_before_calib"])
     
     # Initialize all eval calib values
-    all_eval_calib_probs = []
-    all_eval_probs = []
-    all_eval_labels = []
+    # all_eval_calib_probs = []
+    # all_eval_probs = []
+    # all_eval_labels = []
 
     # Now we apply this to the images of the evaluation set, and save the calibrated probabilities
     for img, label in tqdm(zip(eval_images, eval_labels), desc="Running lesion segmentation on evaluation set"):
@@ -294,10 +314,9 @@ def main_beta_calibration(input_msd, path_model, output_folder, smaller_changes=
             )
             probs = np.where(prob_maps[1] > prob_maps[0], prob_maps[1], 0)
 
-
-            # We also save the non-calibrated probabilities for evaluation purposes
-            all_eval_probs.append(probs.flatten())
-            all_eval_labels.append(label_data.flatten())
+            # # We also save the non-calibrated probabilities for evaluation purposes
+            # all_eval_probs.append(probs.flatten())
+            # all_eval_labels.append(label_data.flatten())
 
             # Compute Dice score and lesion volume before beta calibration
             binary_prediction_before = np.where(probs > 1e-3, 1, 0)
@@ -317,8 +336,8 @@ def main_beta_calibration(input_msd, path_model, output_folder, smaller_changes=
             lr_ratio = (np.exp(c) * (numerator / denominator))
             calibrated_probs = 1 / (1 + (1 / lr_ratio))
 
-            # Add them to the eval calib values
-            all_eval_calib_probs.append(calibrated_probs.flatten())
+            # # Add them to the eval calib values
+            # all_eval_calib_probs.append(calibrated_probs.flatten())
 
             # Compute Dice scores and lesion volume after beta calibration
             binary_prediction_after = np.where(calibrated_probs > 1e-3, 1, 0)
@@ -331,7 +350,56 @@ def main_beta_calibration(input_msd, path_model, output_folder, smaller_changes=
                                     "soft_lesion_volume_after_calib": [soft_lesion_volume_after], "soft_lesion_volume_before_calib": [soft_lesion_volume_before],
                                         "bin_lesion_volume_after_calib": [bin_lesion_volume_after], "bin_lesion_volume_before_calib": [bin_lesion_volume_before]})
             results_df = pd.concat([results_df, new_line], ignore_index=True)
-
+        
+        # Print a slice where the GT lesion are visible
+        if beta_reg_path is not None:
+            label_data = label_data.reshape(probs.shape)
+            # Print name and shape
+            print(f"Subject: {subject}, Image shape: {probs.shape}, Label shape: {label_data.shape}")
+            if "PSIR" in subject or "STIR" in subject:
+                # Extract a slice where the GT lesion is visible: we take the middle slice of the slices where there are lesions
+                slices_with_lesion = np.where(label_data.sum(axis=(0,1)) > 0)[0]
+                if len(slices_with_lesion) == 0:
+                    print(f"No lesion found in the label for subject {subject}, skipping visualization.")
+                    continue
+                slice_idx = slices_with_lesion[len(slices_with_lesion) // 2]
+                plt.figure(figsize=(15, 5))
+                plt.subplot(1, 3, 1)
+                plt.imshow(probs[:, :, slice_idx],cmap='viridis', vmin=0, vmax=1)
+                plt.colorbar()
+                plt.title('Soft Prediction Before Beta Calibration')
+                plt.subplot(1, 3, 2)
+                plt.imshow(calibrated_probs[:, :, slice_idx], cmap='viridis', vmin=0, vmax=1)
+                plt.colorbar()
+                plt.title('Soft Prediction After Beta Calibration')
+                plt.subplot(1, 3, 3)
+                plt.imshow(label_data[:, :, slice_idx], cmap='gray')
+                plt.title('Ground Truth')
+                plt.tight_layout()
+                plt.savefig(os.path.join(output_folder, f"{subject}_slice_{slice_idx}.png"))
+                plt.close()
+            else:
+                # We plot and axial slice with a lesion
+                slices_with_lesion = np.where(label_data.sum(axis=(0,1)) > 0)[0]
+                if len(slices_with_lesion) == 0:
+                    print(f"No lesion found in the label for subject {subject}, skipping visualization.")
+                    continue
+                slice_idx = slices_with_lesion[len(slices_with_lesion) // 2]
+                plt.figure(figsize=(15, 5))
+                plt.subplot(1, 3, 1)
+                plt.imshow(probs[:, slice_idx, :], cmap='viridis', vmin=0, vmax=1)
+                plt.colorbar()
+                plt.title('Soft Prediction Before Beta Calibration')
+                plt.subplot(1, 3, 2)
+                plt.imshow(calibrated_probs[slice_idx, :, :], cmap='viridis', vmin=0, vmax=1)
+                plt.colorbar()
+                plt.title('Soft Prediction After Beta Calibration')
+                plt.subplot(1, 3, 3)
+                plt.imshow(label_data[slice_idx, :, :], cmap='gray')
+                plt.title('Ground Truth')
+                plt.tight_layout()
+                plt.savefig(os.path.join(output_folder, f"{subject}_slice_{slice_idx}.png"))
+                plt.close()
         # Save the results dataframe after each image to avoid losing everything in case of crash
         results_df.to_csv(os.path.join(output_folder, "results_evaluation.csv"), index=False)
 
@@ -391,4 +459,4 @@ def main_beta_calibration(input_msd, path_model, output_folder, smaller_changes=
 
 if __name__ == "__main__":
     args = parse_args()
-    main_beta_calibration(args.msd, args.model_path, args.o, args.smaller_changes)
+    main_beta_calibration(args.msd, args.model_path, args.o, args.smaller_changes, args.beta_reg_path)
