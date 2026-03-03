@@ -229,11 +229,11 @@ def main_isotonice_reg(input_msd, path_model, output_folder, smaller_changes=Fal
         all_calib_labels = np.concatenate(all_calib_labels)
         print(f"Number of calib values: {len(all_calib_probs)}")
         
-        # Remove prob values which are below 0.01
-        mask = all_calib_probs >= 0.001
-        all_calib_probs = all_calib_probs[mask]
-        all_calib_labels = all_calib_labels[mask]
-        print(f"Number of calib values after removing probs < 0.01: {len(all_calib_probs)}")
+        # # Remove prob values which are below 1e-6
+        # mask = all_calib_probs >= 1e-6
+        # all_calib_probs = all_calib_probs[mask]
+        # all_calib_labels = all_calib_labels[mask]
+        # print(f"Number of calib values after removing probs < 1e-6: {len(all_calib_probs)}")
 
         # Fit isotonic regression
         iso_reg = IsotonicRegression(out_of_bounds='clip')

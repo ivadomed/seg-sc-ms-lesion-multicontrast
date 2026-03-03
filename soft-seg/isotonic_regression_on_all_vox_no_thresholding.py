@@ -218,7 +218,7 @@ def main_isotonice_reg(input_msd, path_model, output_folder, smaller_changes=Fal
                 return_logits_per_fold=False, 
                 return_logits = False
             )
-            probs = np.where(prob_maps[1] > prob_maps[0], prob_maps[1], 0)
+            probs = prob_maps[1]
 
             # Add the probs and labels to the calib values
             all_calib_probs.append(probs.flatten())
@@ -229,11 +229,11 @@ def main_isotonice_reg(input_msd, path_model, output_folder, smaller_changes=Fal
         all_calib_labels = np.concatenate(all_calib_labels)
         print(f"Number of calib values: {len(all_calib_probs)}")
         
-        # Remove prob values which are below 0.01
-        mask = all_calib_probs >= 0.001
-        all_calib_probs = all_calib_probs[mask]
-        all_calib_labels = all_calib_labels[mask]
-        print(f"Number of calib values after removing probs < 0.01: {len(all_calib_probs)}")
+        # # Remove prob values which are below 0.01
+        # mask = all_calib_probs >= 0.001
+        # all_calib_probs = all_calib_probs[mask]
+        # all_calib_labels = all_calib_labels[mask]
+        # print(f"Number of calib values after removing probs < 0.01: {len(all_calib_probs)}")
 
         # Fit isotonic regression
         iso_reg = IsotonicRegression(out_of_bounds='clip')
@@ -295,7 +295,7 @@ def main_isotonice_reg(input_msd, path_model, output_folder, smaller_changes=Fal
                 return_logits_per_fold=False, 
                 return_logits = False
             )
-            probs = np.where(prob_maps[1] > prob_maps[0], prob_maps[1], 0)
+            probs = prob_maps[1]
 
             # Add them to the eval calib values
             all_eval_calib_probs.append(probs.flatten())
@@ -311,9 +311,9 @@ def main_isotonice_reg(input_msd, path_model, output_folder, smaller_changes=Fal
             dice_after = dice_score(binary_prediction_after, label_data)
 
             # Compute lesion volumes before and after isotonic regression
-            voxel_volume = np.prod(resamp_img.dim[6:3:-1])  # Get
+            voxel_volume = np.prod(resamp_img.dim[6:3:-1])
             probs_thresholded = np.where(probs > 0.5, probs, 0)
-            calibrated_probs_thresholded = np.where(calibrated_probs > 0.5, calibrated_probs, 0)
+            calibrated_probs_thresholded = np.where(probs > 0.5, calibrated_probs, 0) ##### IMPORTANT CHANGE HERE! 
             soft_lesion_volume_before = probs_thresholded.sum() * voxel_volume
             soft_lesion_volume_after = calibrated_probs_thresholded.sum() * voxel_volume
             bin_lesion_volume_before = binary_prediction_before.sum() * voxel_volume
