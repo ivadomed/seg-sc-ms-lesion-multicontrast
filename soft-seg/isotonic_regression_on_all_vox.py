@@ -441,7 +441,7 @@ def main_isotonice_reg(input_msd, path_model, output_folder, smaller_changes=Fal
     text_to_write += f"Dice after isotonic regression: {dice_after_iso.mean()}\n"
     out_txt_path = os.path.join(output_folder, "summary_results_evaluation.txt")
     with open(out_txt_path, "w") as f:
-            f.write(text_to_write)
+        f.write(text_to_write)
 
 
 
