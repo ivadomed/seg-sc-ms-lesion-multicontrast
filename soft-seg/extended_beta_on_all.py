@@ -164,10 +164,10 @@ def main_extended_beta_calibration(input_msd, path_model, output_folder, smaller
     np.random.shuffle(labels)
 
     # Select images for temperature scaling
-    calib_images = images[:2]
-    calib_labels = labels[:2]
-    eval_images = images[200:201]
-    eval_labels = labels[200:201]
+    calib_images = images[:200]
+    calib_labels = labels[:200]
+    eval_images = images[200:]
+    eval_labels = labels[200:]
 
     if calib_model_path is not None:
         eval_images = images[200:210]
