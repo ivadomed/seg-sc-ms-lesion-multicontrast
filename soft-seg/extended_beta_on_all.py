@@ -130,8 +130,8 @@ class ExtendedBetaCalibration(Module):
         super(ExtendedBetaCalibration, self).__init__()
         # k=7 is suggested to leverage spatial information effectively 
         # Parameters a and b are implemented as convolutional kernels 
-        self.a = Conv2d(in_channels=1, out_channels=1, kernel_size=k,bias=False)
-        self.b = Conv2d(in_channels=1, out_channels=1, kernel_size=k, bias=False)
+        self.a = Conv2d(in_channels=1, out_channels=1, kernel_size=k, padding=k//2, bias=False)
+        self.b = Conv2d(in_channels=1, out_channels=1, kernel_size=k, padding=k//2, bias=False)
         # Parameter c remains a single learnable bias 
         self.c = Parameter(torch.zeros(1))
 
@@ -164,10 +164,10 @@ def main_extended_beta_calibration(input_msd, path_model, output_folder, smaller
     np.random.shuffle(labels)
 
     # Select images for temperature scaling
-    calib_images = images[:200]
-    calib_labels = labels[:200]
-    eval_images = images[200:]
-    eval_labels = labels[200:]
+    calib_images = images[:2]
+    calib_labels = labels[:2]
+    eval_images = images[200:201]
+    eval_labels = labels[200:201]
 
     if calib_model_path is not None:
         eval_images = images[200:210]
@@ -207,7 +207,7 @@ def main_extended_beta_calibration(input_msd, path_model, output_folder, smaller
         # Initialize the training of the extended beta calibration model
         calib_model = ExtendedBetaCalibration(k=7).cuda()
         optimizer = torch.optim.LBFGS(calib_model.parameters(), lr=0.01, max_iter=20)
-        criterion = torch.nn.BCELoss()
+        criterion = torch.nn.BCEWithLogitsLoss()
 
         # Pre-collect data for training (working on slices to save memory)
         # Extended beta needs full spatial context, so don't flatten voxels yet
@@ -242,8 +242,8 @@ def main_extended_beta_calibration(input_msd, path_model, output_folder, smaller
                 return_logits_per_fold=False, 
                 return_logits = True
             )
-            probs = np.where(prob_maps[1] > prob_maps[0], prob_maps[1], 0)
-
+            probs = prob_maps[1]
+            
             # Convert your probs (H, W, D) to (D, 1, H, W)
             probs_torch = torch.from_numpy(probs).float() 
             # Move the depth/slices dimension to the front
@@ -254,17 +254,14 @@ def main_extended_beta_calibration(input_msd, path_model, output_folder, smaller
             # 2. Move input to the GPU to match the model weights
             probs_torch = probs_torch.cuda() 
 
-            # 3. Now run the calibration model
-            calibrated_output = calib_model(probs_torch)
-
-            print(f"Calibrated output shape: {calibrated_output.shape}, Label shape: {label_data.shape}")
-
             # Format the labels to match the output shape of the model (D, 1, H, W)
             targets = torch.from_numpy(label_data).float()
             targets = targets.permute(3, 0, 1, 2)
             targets = targets.cuda()  # Add channel dimension and move to GPU
 
-            print(f"Calibrated output shape: {calibrated_output.shape}, Label shape: {targets.shape}")
+            calibrated_output = calib_model(probs_torch).cpu().detach().numpy()
+
+            print(f"Calibrated output shape: {calibrated_output.shape}, Label shape: {label_data.shape}")
 
             def closure():
                 optimizer.zero_grad()
@@ -342,7 +339,7 @@ def main_extended_beta_calibration(input_msd, path_model, output_folder, smaller
                 return_logits_per_fold=False, 
                 return_logits = True
             )
-            probs = np.where(prob_maps[1] > prob_maps[0], prob_maps[1], 0)
+            probs = prob_maps[1]
 
             with torch.no_grad():
                 # Convert your probs (H, W, D) to (D, 1, H, W)
@@ -359,18 +356,18 @@ def main_extended_beta_calibration(input_msd, path_model, output_folder, smaller
             # Restore the original orientation of the calibrated probabilities to match the label
             calibrated_probs = np.transpose(calibrated_probs, (1, 2, 0))  # Move back to (H, W, D)
 
-            print(f"Calibrated output shape: {calibrated_probs.shape}, Label shape: {label_data.shape}")
-
-            # Compute Dice scores before and after beta calibration
+            # Compute Dice scores before and after isotonic regression
             binary_prediction_before = np.where(probs > 0.5, 1, 0)
             binary_prediction_after = np.where(calibrated_probs > 0.5, 1, 0)
             dice_before = dice_score(binary_prediction_before, label_data)
             dice_after = dice_score(binary_prediction_after, label_data)
 
-            # Compute lesion volumes before and after beta calibration
+            # Compute lesion volumes before and after isotonic regression
             voxel_volume = np.prod(resamp_img.dim[6:3:-1])
-            soft_lesion_volume_before = probs.sum() * voxel_volume
-            soft_lesion_volume_after = calibrated_probs.sum() * voxel_volume
+            probs_thresholded = np.where(probs > 0.5, probs, 0)
+            calibrated_probs_thresholded = np.where(calibrated_probs > 0.5, calibrated_probs, 0)
+            soft_lesion_volume_before = probs_thresholded.sum() * voxel_volume
+            soft_lesion_volume_after = calibrated_probs_thresholded.sum() * voxel_volume
             bin_lesion_volume_before = binary_prediction_before.sum() * voxel_volume
             bin_lesion_volume_after = binary_prediction_after.sum() * voxel_volume
 
