@@ -136,7 +136,10 @@ class ExtendedBetaCalibration(Module):
         self.c = Parameter(torch.zeros(1))
 
     def forward(self, s):
-        s_sig = torch.sigmoid(s)  # Ensure input probabilities are between 0 and 1
+        eps = 1e-7
+        s_sig = torch.sigmoid(s) 
+        s_sig = torch.clamp(s_sig, min=eps, max=1.0 - eps)
+
         s1 = torch.log(s_sig)
         s2 = -torch.log(1 - s_sig)  # Logit transformation
         output = self.a(s1) + self.b(s2) + self.c  # Linear combination with spatial context
@@ -267,7 +270,6 @@ def main_extended_beta_calibration(input_msd, path_model, output_folder, smaller
                 optimizer.zero_grad()
                 # Forward pass: leveraging spatial information via Conv2d kernels 
                 output = calib_model(probs_torch)
-                # Binary Cross-Entropy (BCE) is used for optimization [cite: 1198]
                 loss = criterion(output, targets)
                 loss.backward()
                 return loss

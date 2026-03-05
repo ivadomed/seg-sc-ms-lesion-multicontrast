@@ -136,7 +136,10 @@ class ExtendedBetaCalibration(Module):
         self.c = Parameter(torch.zeros(1))
 
     def forward(self, s):
-        s_sig = torch.sigmoid(s)  # Ensure input probabilities are between 0 and 1
+        eps = 1e-7
+        s_sig = torch.sigmoid(s) 
+        s_sig = torch.clamp(s_sig, min=eps, max=1.0 - eps)
+
         s1 = torch.log(s_sig)
         s2 = -torch.log(1 - s_sig)  # Logit transformation
         output = self.a(s1) + self.b(s2) + self.c  # Linear combination with spatial context
