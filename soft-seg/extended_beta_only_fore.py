@@ -137,11 +137,10 @@ class ExtendedBetaCalibration(Module):
 
     def forward(self, s):
         eps = 1e-7
-        s_sig = torch.sigmoid(s) 
-        s_sig = torch.clamp(s_sig, min=eps, max=1.0 - eps)
+        s_eps = torch.clamp(s, min=eps, max=1.0 - eps)
 
-        s1 = torch.log(s_sig)
-        s2 = -torch.log(1 - s_sig)  # Logit transformation
+        s1 = torch.log(s_eps)
+        s2 = -torch.log(1 - s_eps)  # Logit transformation
         output = self.a(s1) + self.b(s2) + self.c  # Linear combination with spatial context
         return output
 
@@ -243,7 +242,7 @@ def main_extended_beta_calibration(input_msd, path_model, output_folder, smaller
                 save_or_return_probabilities=True,
                 # If using a model ensemble, return the logits per fold so we can average them ourselves
                 return_logits_per_fold=False, 
-                return_logits = True
+                return_logits = False
             )
             probs = np.where(prob_maps[1] > prob_maps[0], prob_maps[1], 0)
             
@@ -336,7 +335,7 @@ def main_extended_beta_calibration(input_msd, path_model, output_folder, smaller
                 save_or_return_probabilities=True,
                 # If using a model ensemble, return the logits per fold so we can average them ourselves
                 return_logits_per_fold=False, 
-                return_logits = True
+                return_logits = False
             )
             probs = np.where(prob_maps[1] > prob_maps[0], prob_maps[1], 0)
 
