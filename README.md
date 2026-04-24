@@ -1,6 +1,6 @@
 # Segmentation of spinal cord multiple sclerosis lesions
 
-## Robust Spinal Cord MS Lesion Segmentation Across Diverse MRI Protocols and Centers
+## Generalizable spinal cord multiple sclerosis lesion segmentation across MRI contrasts, protocols, and centers
 
 [![MSJ](https://img.shields.io/badge/MSJ-10.1177/13524585261427333-darkgreen.svg)](https://doi.org/10.1177/13524585261427333)
 
