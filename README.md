@@ -41,6 +41,8 @@ sct_deepseg lesion_ms
 
 More details can be found in the user section [here](https://spinalcordtoolbox.com/stable/user_section/command-line/sct_deepseg.html#sct-deepseg)
 
+### Code repository
+
 <details>
 <summary><b>Code description</b></summary>
 
