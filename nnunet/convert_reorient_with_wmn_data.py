@@ -108,8 +108,8 @@ def main():
     
         if subject_id in list_subjects_train:
             count_Tr +=1
-            image_file_nnunet = os.path.join(path_out_imagesTr,f'Dataset903_msLesionAgnostic_{count_Tr:03d}_0000.nii.gz')
-            label_file_nnunet = os.path.join(path_out_labelsTr,f'Dataset903_msLesionAgnostic_{count_Tr:03d}.nii.gz')
+            image_file_nnunet = os.path.join(path_out_imagesTr,f'msLesionAgnostic_{count_Tr:03d}_0000.nii.gz')
+            label_file_nnunet = os.path.join(path_out_labelsTr,f'msLesionAgnostic_{count_Tr:03d}.nii.gz')
 
             # Reorient the image
             assert os.system(f"sct_image -i {image_file} -setorient RPI -o {image_file_nnunet}") ==0
@@ -140,8 +140,8 @@ def main():
 
         else:
             count_Ts +=1
-            image_file_nnunet = os.path.join(path_out_imagesTs,f'Dataset903_msLesionAgnostic_{count_Ts:03d}_0000.nii.gz')
-            label_file_nnunet = os.path.join(path_out_labelsTs,f'Dataset903_msLesionAgnostic_{count_Ts:03d}.nii.gz')
+            image_file_nnunet = os.path.join(path_out_imagesTs,f'msLesionAgnostic_{count_Ts:03d}_0000.nii.gz')
+            label_file_nnunet = os.path.join(path_out_labelsTs,f'msLesionAgnostic_{count_Ts:03d}.nii.gz')
 
             # Reorient the image
             assert os.system(f"sct_image -i {image_file} -setorient RPI -o {image_file_nnunet}") ==0
