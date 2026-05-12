@@ -41,6 +41,22 @@ def load_nnunet_weights(checkpoint_path, json_config_path):
     return res_enc_unet
 
 
+class ShapeExtractorModule(nn.Module):
+    def __init__(self, in_channels=3, out_channels=32):
+        super(ShapeExtractorModule, self).__init__()
+        self.layers = nn.Sequential(
+            nn.Conv3d(in_channels, out_channels, kernel_size=3, padding=1),
+            nn.ReLU(inplace=True),
+            nn.Conv3d(out_channels, out_channels, kernel_size=3, padding=1),
+            nn.ReLU(inplace=True),
+            nn.Conv3d(out_channels, out_channels, kernel_size=3, padding=1),
+            nn.ReLU(inplace=True)
+        )
+
+    def forward(self, m_prev):
+        return self.layers(m_prev)
+
+
 class MambaXNet(nn.Module):
     def __init__(self, n_channels=1, resenc_model=None, n_classes=2):
         super(MambaXNet, self).__init__()
@@ -51,6 +67,7 @@ class MambaXNet(nn.Module):
         self.encoder_layer4 = resenc_model.encoder[-4]
         self.encoder_layer5 = resenc_model.encoder[-5]
         self.encoder_layer6 = resenc_model.encoder[-6]
+
         # Reconstruction of the decoder layers
         self.decoder_layer1 = resenc_model.decoder[-1]
         self.decoder_layer2 = resenc_model.decoder[-2]
@@ -59,38 +76,46 @@ class MambaXNet(nn.Module):
         self.decoder_layer5 = resenc_model.decoder[-5]
         self.decoder_layer6 = resenc_model.decoder[-6]
         
-        # self.sem = ShapeExtractorModule()
+        self.sem = ShapeExtractorModule()
         
         # # M-CAM blocks integrated at the last three upsampling levels
-        # self.m_cams = nn.ModuleList([
-        #     MCAM(channels=256, num_patches=..., embedding_dim=256),
-        #     MCAM(channels=128, num_patches=..., embedding_dim=128),
-        #     MCAM(channels=64, num_patches=..., embedding_dim=64)
-        # ])
-
-    def _conv_block(self, in_c, out_c):
-        return nn.Sequential(nn.Conv3d(in_c, out_c, 3, padding=1), nn.ReLU())
+        self.m_cams = nn.ModuleList([
+            MCAM(channels=256, num_patches=..., embedding_dim=256),
+            MCAM(channels=128, num_patches=..., embedding_dim=128),
+            MCAM(channels=64, num_patches=..., embedding_dim=64)
+        ])
 
     def forward(self, i_t, i_prev, m_prev):
-        # 1. Feature Extraction (Shared weights for Enc_t and Enc_prev)
-        ## For image at t
-        features_t = []
-        x_t = i_t
-        for layer in self.encoder:
-            x_t = layer(x_t)
-            features_t.append(x_t)
-        ## For image at t-1 (shared encoder)  
-        features_prev = []
-        x_prev = i_prev
-        for i in range(3): # Auxiliary encoder truncated to top 3 feature maps
-            x_prev = self.encoder[i](x_prev)
-            features_prev.append(x_prev)
-            
-        # 2. Shape Extraction of previous mask
-        f_sem = self.sem(m_prev)
-        
-        # 3. Decoding with M-CAM Fusion
-        ## The features at times t goes directly through th
+        # Build features output by encoder layers for time t
+        e1 = self.encoder_layer1(i_t)
+        e2 = self.encoder_layer2(e1)
+        e3 = self.encoder_layer3(e2)
+        e4 = self.encoder_layer4(e3)
+        e5 = self.encoder_layer5(e4)
+        e6 = self.encoder_layer6(e5)
+        # Build features output by encoder layers for time t-1
+        e1_prev = self.encoder_layer1(i_prev)
+        e2_prev = self.encoder_layer2(e1_prev)
+        e3_prev = self.encoder_layer3(e2_prev)
+
+        # Extract shape features from the previous time point using SEM
+        shape_features = self.sem(m_prev)
+
+        # Merge with M-CAM blocks at the last three upsampling levels
+        e1_mcam = self.m_cams(e1, e1_prev, shape_features)
+        e2_mcam = self.m_cams(e2, e2_prev, shape_features)
+        e3_mcam = self.m_cams(e3, e3_prev, shape_features)
+
+        # Build outputs of the decoder layers, integrating the M-CAM outputs
+        d1 = self.decoder_layer1(e6)
+        d2 = self.decoder_layer2(d1 + e5)
+        d3 = self.decoder_layer3(d2 + e4)
+        d4 = self.decoder_layer4(d3 + e3_mcam)
+        d5 = self.decoder_layer5(d4 + e2_mcam)
+        d6 = self.decoder_layer6(d5 + e1_mcam)
+
+        return d6
+
 
 
 def main():
