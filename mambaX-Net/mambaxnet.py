@@ -1,6 +1,6 @@
 import torch
 import torch.nn as nn
-from mcam_v2 import MCAM
+from mcam import MCAM
 from dynamic_network_architectures.architectures.unet import ResidualEncoderUNet
 import json
 import pydoc # Useful for importing classes from strings
