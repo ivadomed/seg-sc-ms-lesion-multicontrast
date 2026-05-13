@@ -8,10 +8,14 @@ import pydoc # Useful for importing classes from strings
 from mamba_ssm import Mamba # Requires mamba-ssm installation
 
 
-def load_nnunet_weights(checkpoint_path, json_config_path):
+def load_nnunet_weights(model_folder):
     """
     This function loads the weights of the pretrained ResEncoderUNet and returns the model.
     """
+    # Build the paths to the checkpoint and json config file based on the provided model folder path
+    checkpoint_path = f'{model_folder}/fold_0/checkpoint_best.pth'
+    json_config_path = f'{model_folder}/plans.json'
+    
     # Load the nnU-Net checkpoint
     checkpoint = torch.load(checkpoint_path, map_location='cpu', weights_only=False)
     
@@ -165,10 +169,8 @@ def main():
 
     # Try loading the nnU-Net weights into MambaXNet
     model_folder = '/home/plbenveniste/net/longitudinal_mamba/trained_resencUnet/nnUNetTrainerDiceCELoss_noSmooth_4000epochs_fromScratch__nnUNetResEncUNetL1x1x1_Model2_Plans__3d_fullres'
-    checkpoint_path = f'{model_folder}/fold_0/checkpoint_best.pth'
-    json_config_path = f'{model_folder}/plans.json'
     # Load resenc model with pretrained nnU-Net weights
-    resenc_model = load_nnunet_weights(checkpoint_path, json_config_path)
+    resenc_model = load_nnunet_weights(model_folder)
     print("Pretrained nnU-Net weights loaded successfully into ResEncoderUNet model.")
 
     # initialize MambaXNet with the loaded ResEncoderUNet model
