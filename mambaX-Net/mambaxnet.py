@@ -1,5 +1,6 @@
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from mcam import MCAM
 from dynamic_network_architectures.architectures.unet import ResidualEncoderUNet
 import json
@@ -83,15 +84,11 @@ class MambaXNet(nn.Module):
         self.enc_stage4 = enc.stages[4]
         self.enc_stage5 = enc.stages[5]
 
-        # Reconstruction of the decoder layers
-        decoder = resenc_model.decoder.encoder
-        self.dec_stem = decoder.stem
-        self.dec_stage0 = decoder.stages[0]
-        self.dec_stage1 = decoder.stages[1]
-        self.dec_stage2 = decoder.stages[2]
-        self.dec_stage3 = decoder.stages[3]
-        self.dec_stage4 = decoder.stages[4]
-        self.dec_stage5 = decoder.stages[5]
+        # Decoder layers — pulled from the actual decoder, not decoder.encoder
+        dec = resenc_model.decoder
+        self.transpconvs = dec.transpconvs   # ModuleList of 5 ConvTranspose3d
+        self.dec_stages   = dec.stages        # ModuleList of 5 StackedConvBlocks
+        self.seg_layers   = dec.seg_layers    # ModuleList of 5 Conv3d heads
 
         # Build the SEM module to extract shape features from the previous time point
         self.sem = ShapeExtractorModule(in_channels=1, out_channels=32)
@@ -99,7 +96,7 @@ class MambaXNet(nn.Module):
         # M-CAM blocks integrated at the last three upsampling levels
         self.m_cam1 = MCAM(in_channels=32, embed_dim=128, num_heads=8, sem_channels=32)
         self.m_cam2 = MCAM(in_channels=64, embed_dim=64, num_heads=8, sem_channels=32)
-        self.m_cam3 = MCAM(in_channels=32, embed_dim=32, num_heads=8, sem_channels=32)
+        self.m_cam3 = MCAM(in_channels=128, embed_dim=32, num_heads=8, sem_channels=32)
 
     def forward(self, i_t, i_prev, m_prev):
         # Build features output by encoder layers for time t
@@ -130,18 +127,29 @@ class MambaXNet(nn.Module):
 
         # # Merge with M-CAM blocks at the last three upsampling levels
         e1_mcam = self.m_cam1(e1, e1_prev, m_prev_shape)
-        # e2_mcam = self.m_cam2(e2, e2_prev, m_prev_shape)
-        # e3_mcam = self.m_cam3(e3, e3_prev, m_prev_shape)
+        e2_mcam = self.m_cam2(e2, e2_prev, m_prev_shape)
+        e3_mcam = self.m_cam3(e3, e3_prev, m_prev_shape)
 
-        # Build outputs of the decoder layers, integrating the M-CAM outputs
-        d1 = self.dec_stage0(self.dec_stem(e6))
-        d2 = self.dec_stage1(d1, e5)
-        d3 = self.dec_stage2(d2, e4)
-        d4 = self.dec_stage3(d3, d3)
-        d5 = self.dec_stage4(d4, d3)
-        d6 = self.dec_stage5(d5, e1_mcam)
+        # --- Decoder (transpconv → cat with skip → stage) ---
+        # stage 0: bottleneck e6 → upsample → cat(e5) → 640→320
+        d = self.transpconvs[0](e6)            # [B, 320, ...]
+        d = self.dec_stages[0](torch.cat([d, e5], dim=1))   # [B, 320, ...]
+        # stage 1: → cat(e4) → 512→256
+        d = self.transpconvs[1](d)
+        d = self.dec_stages[1](torch.cat([d, e4], dim=1))   # [B, 256, ...]
+        # stage 2: → cat(e3_mcam) → 256→128
+        d = self.transpconvs[2](d)
+        d = self.dec_stages[2](torch.cat([d, e3_mcam], dim=1))  # [B, 128, ...]
+        # stage 3: → cat(e2_mcam) → 128→64
+        d = self.transpconvs[3](d)
+        d = self.dec_stages[3](torch.cat([d, e2_mcam], dim=1))  # [B, 64, ...]
+        # stage 4: → cat(e1_mcam) → 64→32
+        d = self.transpconvs[4](d)
+        d = self.dec_stages[4](torch.cat([d, e1_mcam], dim=1))  # [B, 32, ...]
+        # Final segmentation head
+        out = self.seg_layers[4](d)   # [B, 2, D, H, W]
         
-        return d6
+        return e1_mcam
 
 
 def main():
@@ -162,12 +170,6 @@ def main():
     # Load resenc model with pretrained nnU-Net weights
     resenc_model = load_nnunet_weights(checkpoint_path, json_config_path)
     print("Pretrained nnU-Net weights loaded successfully into ResEncoderUNet model.")
-
-    # Print show the size of inputs and outputs of the ResEncoderUNet to verify correct loading
-    # dummy_input = torch.randn(1, 1, 128, 128, 128) # Example input shape
-    # with torch.no_grad():
-    #     resenc_output = resenc_model(dummy_input)
-    # print("ResEncoderUNet forward pass successful. Output shape:", resenc_output.shape)
 
     # initialize MambaXNet with the loaded ResEncoderUNet model
     model = MambaXNet(n_channels=1, resenc_model=resenc_model, n_classes=2)

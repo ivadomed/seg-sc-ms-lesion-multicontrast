@@ -57,22 +57,6 @@ class PatchEmbedding3D(nn.Module):
 
 
 # ---------------------------------------------------------------------------
-# Mamba block
-# ---------------------------------------------------------------------------
-class MambaBlock(nn.Module):
-    """Thin wrapper around mamba-ssm's Mamba for sequence [B, N, E]."""
-
-    def __init__(self, d_model: int, d_state: int = 16, d_conv: int = 4, expand: int = 2):
-        super().__init__()
-        self.norm = nn.LayerNorm(d_model)
-        self.mamba = Mamba(d_model=d_model, d_state=d_state, d_conv=d_conv, expand=expand)
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """x: [B, N, E]  ->  [B, N, E]"""
-        return self.mamba(self.norm(x))
-
-
-# ---------------------------------------------------------------------------
 # Unpack Embedding  (sequence -> 3-D spatial)
 # ---------------------------------------------------------------------------
 class UnpackEmbedding(nn.Module):
@@ -146,11 +130,9 @@ class MCAM(nn.Module):
         D, H, W = spatial_shape
         sem_C   = f_sem.shape[1]
 
-        # Reshape f_sem: [B, sem_C, D, H, W] -> [B, sem_C*D, H, W]
-        # The paper says "reshape to (B × 3D × H × W)";
-        # we generalise to sem_C*D to handle arbitrary channel counts.
-        f_sem_reshaped = f_sem.reshape(B, sem_C * D, H, W)   # [B, sem_C*D, H, W]
-        print("f_sem_reshaped.shape:", f_sem_reshaped.shape)
+        # Resize f_sem to match spatial dimensions of f_t if needed (e.g. if SEM output is at a different resolution)
+        if f_sem.shape[2:] != (D, H, W):
+            f_sem = F.interpolate(f_sem, size=(D, H, W), mode='trilinear', align_corners=False)
 
         # Step 1 — flatten f_SEM spatially to get one token per voxel.
         # f_sem is [B, sem_C, D, H, W]; we want [B, N, sem_C] where N = D*H*W.
