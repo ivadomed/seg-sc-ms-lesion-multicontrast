@@ -150,7 +150,7 @@ def get_dataloaders(json_path: str,
             pin_memory  = True,
             collate_fn  = longitudinal_collate,
         )
-        print(f"{split}: {len(ds)} pairs → {len(loaders[split])} batches")
+        # print(f"{split}: {len(ds)} pairs → {len(loaders[split])} batches")
 
     return loaders["train"], loaders["validation"], loaders["test"]
 
