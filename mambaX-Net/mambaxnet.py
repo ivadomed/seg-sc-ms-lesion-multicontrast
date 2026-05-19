@@ -5,7 +5,6 @@ from mcam import MCAM
 from dynamic_network_architectures.architectures.unet import ResidualEncoderUNet
 import json
 import pydoc # Useful for importing classes from strings
-from mamba_ssm import Mamba # Requires mamba-ssm installation
 
 
 def load_nnunet_weights(model_folder):
@@ -102,58 +101,61 @@ class MambaXNet(nn.Module):
         self.m_cam2 = MCAM(in_channels=64, embed_dim=64, num_heads=8, sem_channels=32)
         self.m_cam3 = MCAM(in_channels=128, embed_dim=32, num_heads=8, sem_channels=32)
 
-    def forward(self, i_t, i_prev, m_prev):
-        # Build features output by encoder layers for time t
+    def forward(self, i_t: torch.Tensor,
+                i_prev: torch.Tensor,
+                m_prev: torch.Tensor) -> torch.Tensor:
+        """
+        Args:
+            i_t    : (B, 1, *spatial)  image at the current time-point
+            i_prev : (B, 1, *spatial)  image at the previous time-point
+            m_prev : (B, 1, *spatial)  segmentation mask at the previous time-point
+
+        Returns:
+            out    : (B, n_classes, *spatial)  logits for the current time-point
+        """
+        # Encoder features for current time-point
         e1 = self.enc_stage0(self.enc_stem(i_t))
-        print("e1.shape:", e1.shape)
         e2 = self.enc_stage1(e1)
-        print("e2.shape:", e2.shape)
         e3 = self.enc_stage2(e2)
-        print("e3.shape:", e3.shape)
         e4 = self.enc_stage3(e3)
-        print("e4.shape:", e4.shape)
         e5 = self.enc_stage4(e4)
-        print("e5.shape:", e5.shape)
         e6 = self.enc_stage5(e5)
-        print("e6.shape:", e6.shape)
-        
-        # Build features output by encoder layers for time t-1
+
+        # Encoder features for previous time-point (first three levels only,
+        # used as context in M-CAM)
         e1_prev = self.enc_stage0(self.enc_stem(i_prev))
-        print("e1_prev.shape:", e1_prev.shape)
         e2_prev = self.enc_stage1(e1_prev)
-        print("e2_prev.shape:", e2_prev.shape)
         e3_prev = self.enc_stage2(e2_prev)
-        print("e3_prev.shape:", e3_prev.shape)
 
-        # Extract shape features from the previous time point using SEM
+        # Shape features from previous mask
         m_prev_shape = self.sem(m_prev)
-        print("m_prev_shape.shape:", m_prev_shape.shape)
 
-        # # Merge with M-CAM blocks at the last three upsampling levels
+        # M-CAM cross-attention at the three finest encoder resolutions
         e1_mcam = self.m_cam1(e1, e1_prev, m_prev_shape)
         e2_mcam = self.m_cam2(e2, e2_prev, m_prev_shape)
         e3_mcam = self.m_cam3(e3, e3_prev, m_prev_shape)
 
-        # --- Decoder (transpconv → cat with skip → stage) ---
+        # Decoder (transpconv → cat with skip → stage)
         # stage 0: bottleneck e6 → upsample → cat(e5) → 640→320
-        d = self.transpconvs[0](e6)            # [B, 320, ...]
-        d = self.dec_stages[0](torch.cat([d, e5], dim=1))   # [B, 320, ...]
+        d = self.transpconvs[0](e6)
+        d = self.dec_stages[0](torch.cat([d, e5], dim=1))
         # stage 1: → cat(e4) → 512→256
         d = self.transpconvs[1](d)
-        d = self.dec_stages[1](torch.cat([d, e4], dim=1))   # [B, 256, ...]
+        d = self.dec_stages[1](torch.cat([d, e4], dim=1))
         # stage 2: → cat(e3_mcam) → 256→128
         d = self.transpconvs[2](d)
-        d = self.dec_stages[2](torch.cat([d, e3_mcam], dim=1))  # [B, 128, ...]
+        d = self.dec_stages[2](torch.cat([d, e3_mcam], dim=1))
         # stage 3: → cat(e2_mcam) → 128→64
         d = self.transpconvs[3](d)
-        d = self.dec_stages[3](torch.cat([d, e2_mcam], dim=1))  # [B, 64, ...]
+        d = self.dec_stages[3](torch.cat([d, e2_mcam], dim=1))
         # stage 4: → cat(e1_mcam) → 64→32
         d = self.transpconvs[4](d)
-        d = self.dec_stages[4](torch.cat([d, e1_mcam], dim=1))  # [B, 32, ...]
+        d = self.dec_stages[4](torch.cat([d, e1_mcam], dim=1))
+
         # Final segmentation head
-        out = self.seg_layers[4](d)   # [B, 2, D, H, W]
-        
-        return e1_mcam
+        out = self.seg_layers[4](d)   # (B, n_classes, *spatial)
+
+        return out
 
 
 def main():
@@ -180,12 +182,12 @@ def main():
     print("MambaXNet initialized with pretrained nnU-Net weights.")
 
     # Generate a random input tensor to test the forward pass
-    i_t = torch.randn(1, 1, 32, 128, 128).to(device) # Example input for time t
-    i_prev = torch.randn(1, 1, 32, 128, 128).to(device) # Example input for time t-1
-    m_prev = torch.randn(1, 1, 32, 128, 128).to(device) # Example mask from time t-1
+    i_t    = torch.randn(1, 1, 32, 128, 128).to(device)
+    i_prev = torch.randn(1, 1, 32, 128, 128).to(device)
+    m_prev = torch.randn(1, 1, 32, 128, 128).to(device)
     output = model(i_t, i_prev, m_prev)
-    print("MambaXNet forward pass successful. Output shape:", output.shape)    
-    
-    
+    print("MambaXNet forward pass successful. Output shape:", output.shape)
+
+
 if __name__ == "__main__":
    main()
