@@ -153,23 +153,3 @@ def get_dataloaders(json_path: str,
         # print(f"{split}: {len(ds)} pairs → {len(loaders[split])} batches")
 
     return loaders["train"], loaders["validation"], loaders["test"]
-
-
-# ------------------------------------------------------------------ #
-# 5. Usage
-# ------------------------------------------------------------------ #
-
-if __name__ == "__main__":
-    train_loader, val_loader, test_loader = get_dataloaders(
-        json_path    = "dataset_2026-05-13.json",
-        target_shape = (128, 128, 64),   # tune to your GPU memory
-        batch_size   = 2,
-        num_workers  = 4,
-    )
-
-    # Sanity check
-    batch = next(iter(train_loader))
-    print("image1 shape:", batch["image1"].shape)   # (B, 1, 128, 128, 64)
-    print("label2 shape:", batch["label2"].shape)   # (B, 1, 128, 128, 64)
-    print("subjects    :", batch["subject"])
-    print("contrasts   :", batch["contrast"])
