@@ -6,6 +6,7 @@ Input:
     -i2 : path to the input image at timepoint 2
     -pred: path tp the folder containing predicted files (SC, lesion ...)
     -o : path to the output folder where comparison results will be stored
+    -w_z_over_disk : weight for the z-axis distance relative to the disk plane when computing lesion matching (default: 25.0)
 
 Output:
     None
@@ -37,6 +38,7 @@ def parse_args():
     parser.add_argument('-i2', '--input_image2', type=str, required=True, help='Path to the input image at timepoint 2')
     parser.add_argument('-pred', '--pred_folder', type=str, required=False, help='Path to the folder containing predicted files (SC, lesion ...)')
     parser.add_argument('-o', '--output_folder', type=str, required=True, help='Path to the output folder where comparison results will be stored')
+    parser.add_argument('--w_z_over_disk', type=float, default=25.0, help='Weight for the z-axis distance relative to the disk plane when computing lesion matching')
     return parser.parse_args()
 
 
@@ -297,13 +299,14 @@ def compute_lesion_location(lesion_analysis, lesion_seg, sc_seg, lbl_centerline,
     return lesion_analysis
 
 
-def lesion_matching(lesion_analysis_1, lesion_analysis_2):
+def lesion_matching(lesion_analysis_1, lesion_analysis_2, w_z_over_disk=25.0):
     """
     This function performs lesion matching between two timepoints based on lesion location.
 
     Inputs:
         lesion_analysis_1 : results of the lesion analysis at timepoint 1
         lesion_analysis_2 : results of the lesion analysis at timepoint 2
+        w_z_over_disk : weight for the z-axis distance relative to the disk plane
 
     Outputs:
         matched_lesions : dictionary containing matched lesions between the two timepoints
@@ -311,9 +314,9 @@ def lesion_matching(lesion_analysis_1, lesion_analysis_2):
     # We build the Hungarian matrix with distances between lesions based on location (z, r, theta)
     hungarian_matrix = np.zeros((len(lesion_analysis_1), len(lesion_analysis_2)))
 
-    # Define weights (tune empirically)
-    w_z = 25.0      # strong weight on z-axis
-    w_disk = 1.0    # small weight on axial position as angles are not very reliable
+    # We define weights for the different components of the distance
+    w_z = w_z_over_disk
+    w_disk = 1.0
 
     for i, lesion_1 in enumerate(lesion_analysis_1.values()):
         for j, lesion_2 in enumerate(lesion_analysis_2.values()):
@@ -336,7 +339,7 @@ def lesion_matching(lesion_analysis_1, lesion_analysis_2):
     return lesion_mapping
 
 
-def map_lesions_unregistered(input_image1, input_image2, pred_folder, output_folder, GT_lesion=False):
+def map_lesions_unregistered(input_image1, input_image2, pred_folder, output_folder, GT_lesion=False, w_z_over_disk=25.0):
     """
     This function performs lesion mapping between two timepoints.
 
@@ -396,7 +399,7 @@ def map_lesions_unregistered(input_image1, input_image2, pred_folder, output_fol
     lesion_analysis_2 = compute_lesion_location(lesion_analysis_2, lesion_seg_2, sc_seg_2, labeled_centerline_2, levels_2)
 
     # We perform lesion matching between timepoint 1 and timepoint 2 based on location
-    lesion_mapping = lesion_matching(lesion_analysis_1, lesion_analysis_2)
+    lesion_mapping = lesion_matching(lesion_analysis_1, lesion_analysis_2, w_z_over_disk=w_z_over_disk)
     logger.info(f"Lesion matching: {lesion_mapping}")
 
     # # Remove the temporary folder
@@ -411,8 +414,9 @@ def main():
     input_image2 = args.input_image2
     pred_folder = args.pred_folder
     output_folder = args.output_folder
+    w_z_over_disk = args.w_z_over_disk
 
-    lesion_mapping = map_lesions_unregistered(input_image1, input_image2, pred_folder, output_folder)
+    lesion_mapping = map_lesions_unregistered(input_image1, input_image2, pred_folder, output_folder, w_z_over_disk=w_z_over_disk)
 
     return None
 
