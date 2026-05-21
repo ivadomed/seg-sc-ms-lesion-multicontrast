@@ -2,6 +2,8 @@
 
 Here are the steps to reproduce the study:
 
+### Data preparation
+
 1. Build the MSD file from the include.yml file of selected subject for this study (in this case we used this [include.yml](./dataset_aggregation/include.yml) file)
 
 ```console
@@ -26,6 +28,8 @@ python run_sct_methods.py -i /path/to/msd/dataset -o /output/path
 python generate_csv_for_ML.py  -i /path/to/msd/ -pred /path/to/pred/segs/ -gt_mappings /path/to/folder/GT/mappings -o /path/output/folder 
 ```
 
+### Running lesion tracking
+
 5. Run tracking for non-ML methods using [run_lesion_tracking.py](./tracking/run_lesion_tracking.py)
 
 ```console
@@ -43,3 +47,7 @@ python track_lesion_xgb.py --dataset_csv /path/to/csv/dataset --output_folder /p
 ```console
 python track_lesion_siamese.py --dataset_csv /path/to/csv/dataset --output_folder /path/output/folder
 ```
+
+### Lesion tracking evaluation
+
+8. To evaluate each tracking methods we run [run_evaluation.py](./eval_tracking/run_evaluation.py)
