@@ -1,5 +1,5 @@
 """
-This code performs lesion mapping from baseline to follow-up MRI scans using a machine learning model.
+This code builds a dataset for training a model to predict lesion mapping between two timepoints.
 
 Input:
     -i: msd dataset path

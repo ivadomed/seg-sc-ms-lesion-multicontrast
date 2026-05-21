@@ -1,6 +1,6 @@
 """
 In this script, we perform lesion mapping between two timepoints using an XGBoost model to predict lesion correspondences based on features extracted from the lesions.
-The specificity of this script is that it uses cross-validation to estimate the performance of the model on the entire dataset.
+The specificity of this script is that it uses LOOCV to estimate the performance of the model on the entire dataset.
 
 Inputs:
     - dataset_csv: Path to the csv dataset containing lesion features over time.
