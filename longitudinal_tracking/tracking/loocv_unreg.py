@@ -41,7 +41,7 @@ from track_lesion_unreg import map_lesions_unregistered
 from run_evaluation import compare_2_lesion_mappings
 
 
-W_VALUES = list(range(10, 51, 5))  # [10, 15, 20, 25, 30, 35, 40, 45, 50]
+W_VALUES = list(range(5, 36, 5))  # [10, 15, 20, 25, 30, 35, 40, 45, 50]
 
 
 def parse_args():
