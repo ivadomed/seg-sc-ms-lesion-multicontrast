@@ -139,6 +139,9 @@ def label_centerline(centerline, levels, output_labeled_centerline):
     labeled_centerline_img = nib.Nifti1Image(labeled_centerline_data, nib.load(centerline).affine)
     nib.save(labeled_centerline_img, output_labeled_centerline)
 
+    # Release memory
+    del centerline_data, levels_data, labeled_centerline_data
+
     return None
 
 
@@ -193,7 +196,9 @@ def analyze_lesions(labeled_lesion_seg):
         analysis_results[f'{int(label)}']['diameter_RL_mm'] = extent_mm[RL_axis]
         analysis_results[f'{int(label)}']['diameter_AP_mm'] = extent_mm[AP_axis]
         analysis_results[f'{int(label)}']['diameter_SI_mm'] = extent_mm[SI_axis]
-        
+
+    # Release memory
+    del lesion_data
 
     return analysis_results
 
@@ -244,6 +249,9 @@ def compute_theta_angle(CoM, z_value, CoM_closest_centerline_point, lbl_centerli
     theta = np.arctan2(np.linalg.norm(np.cross(mean_vector, direction_lesion)), np.dot(mean_vector, direction_lesion))
     theta = np.degrees(theta)
 
+    # Release memory
+    del lbl_centerline_data, levels_data, centerline_coords, vectors, mean_vector,
+
     return theta
 
 
@@ -268,7 +276,6 @@ def compute_lesion_location(lesion_analysis, lesion_seg, sc_seg, lbl_centerline,
     # Load the data necessary for the computation
     lesion_data = nib.load(lesion_seg).get_fdata()
     lbl_centerline_data = nib.load(lbl_centerline).get_fdata()
-    levels_data = nib.load(levels).get_fdata()
 
     # Get the resolution
     resolution = nib.load(lesion_seg).header.get_zooms()
@@ -295,6 +302,9 @@ def compute_lesion_location(lesion_analysis, lesion_seg, sc_seg, lbl_centerline,
         # To compute theta, we need to define the anterior-posterior direction
         theta = compute_theta_angle(CoM, z_value, closest_centerline_point, lbl_centerline, levels, resolution)
         lesion_analysis[lesion_id]['theta'] = theta
+
+    # Release memory
+    del lesion_data, lbl_centerline_data
 
     return lesion_analysis
 
