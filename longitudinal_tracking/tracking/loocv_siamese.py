@@ -208,7 +208,15 @@ def main():
         'fn_scores': cv_fn_scores,
         'precision_scores': cv_precision_scores,
         'recall_scores': cv_recall_scores,
-        'f1_scores': cv_f1_scores
+        'f1_scores': cv_f1_scores, 
+        'CV_scores': {
+            'TP': int(np.sum(cv_tp_scores)),
+            'FP': int(np.sum(cv_fp_scores)),
+            'FN': int(np.sum(cv_fn_scores)),
+            'precision': float(np.mean(cv_precision_scores)),
+            'recall': float(np.mean(cv_recall_scores)),
+            'f1_score': float(np.mean(cv_f1_scores))
+        }
     }
     results_path = os.path.join(output_folder, 'cross_validation_results.json')
     with open(results_path, 'w') as f:
