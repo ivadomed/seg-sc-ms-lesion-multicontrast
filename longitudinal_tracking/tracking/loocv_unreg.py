@@ -121,6 +121,14 @@ def main():
         logger.info(f"{'='*60}")
         logger.info(f"Test subject: {test_subject}  |  {len(train_subjects)} training subjects")
 
+        # Skip fold if test_results.json already exists (restart support)
+        test_results_file = os.path.join(fold_folder, 'test_results.json')
+        if os.path.isfile(test_results_file):
+            logger.info(f"Skipping {test_subject}: test_results.json already exists, loading cached results.")
+            with open(test_results_file, 'r') as f:
+                loocv_results[test_subject] = json.load(f)
+            continue
+
         # ------------------------------------------------------------------
         # Inner loop: select best w on training subjects
         # ------------------------------------------------------------------
