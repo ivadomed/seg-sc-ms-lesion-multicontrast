@@ -22,7 +22,9 @@ import argparse
 import json
 from tqdm import tqdm
 from track_lesion_reg_com import map_lesions_registered_with_CoM
+from track_lesion_reg_com_m0_to_m12 import map_lesions_registered_with_CoM_m0_to_m12
 from track_lesion_reg_iou import map_lesions_registered_with_IoU
+from track_lesion_reg_iou_m0_to_m12 import map_lesions_registered_with_IoU_m0_to_m12
 from track_lesion_unreg import map_lesions_unregistered
 
 
@@ -31,7 +33,7 @@ def parse_args():
     parser.add_argument('-i', '--input-msd', type=str, required=True, help='Path to the input MSD dataset')
     parser.add_argument('-pred', '--pred', type=str, required=True, help='Path to the folder containing the predicted segmentations')
     parser.add_argument('-o', '--output-folder', type=str, required=True, help='Path to the output folder where lesion matching results will be stored')
-    parser.add_argument('-m', '--method', type=str, required=True, choices=['registered_with_CoM', 'registered_with_IoU', 'unregistered'], help='Method to use for lesion matching')
+    parser.add_argument('-m', '--method', type=str, required=True, choices=['registered_with_CoM', 'registered_with_IoU', 'registered_with_CoM_m0_to_m12', 'registered_with_IoU_m0_to_m12', 'unregistered'], help='Method to use for lesion matching')
     parser.add_argument('--w_z_over_disk', type=float, default=25.0, help='Weight for the z-axis distance relative to the disk plane when computing lesion matching (default: 25.0)')
     return parser.parse_args()
 
@@ -62,8 +64,12 @@ def main(input_msd_dataset, pred_folder, output_folder, method, w_z_over_disk):
 
         if method == 'registered_with_CoM':
             lesion_mapping = map_lesions_registered_with_CoM(input_image1, input_image2, subject_pred_folder, subject_output_folder)
+        elif method == 'registered_with_CoM_m0_to_m12':
+            lesion_mapping = map_lesions_registered_with_CoM_m0_to_m12(input_image1, input_image2, subject_pred_folder, subject_output_folder)
         elif method == 'registered_with_IoU':
             lesion_mapping = map_lesions_registered_with_IoU(input_image1, input_image2, subject_pred_folder, subject_output_folder)
+        elif method == 'registered_with_IoU_m0_to_m12':
+            lesion_mapping = map_lesions_registered_with_IoU_m0_to_m12(input_image1, input_image2, subject_pred_folder, subject_output_folder)
         elif method == 'unregistered':
             lesion_mapping = map_lesions_unregistered(input_image1, input_image2, subject_pred_folder, subject_output_folder, w_z_over_disk=w_z_over_disk)
         
