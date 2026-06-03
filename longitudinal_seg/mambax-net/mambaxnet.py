@@ -1,10 +1,17 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from mcam import MCAM
 from dynamic_network_architectures.architectures.unet import ResidualEncoderUNet
 import json
 import pydoc # Useful for importing classes from strings
+
+import os
+import sys
+# Import the functions from utils in parent folder
+file_path = os.path.abspath(os.path.dirname(__file__))
+root_path = os.path.abspath(os.path.join(file_path, ".."))
+sys.path.insert(0, root_path)
+from mcam import MCAM
 
 
 def load_nnunet_weights(model_folder):
