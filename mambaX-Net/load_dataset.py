@@ -81,7 +81,8 @@ def get_transforms(split: str, target_shape=(192, 192, 192)):
         # Reorient to RPI (adjust to your data) — ensures consistent orientation across subjects
         T.Orientationd(keys=all_keys, axcodes="RPI", labels=(('L', 'R'), ('P', 'A'), ('I', 'S'))),
         # Resample to 1mm iso
-        T.Spacingd(keys=all_keys, pixdim=(1.0, 1.0, 1.0), mode="bilinear"),
+        T.Spacingd(keys=image_keys + label_keys, pixdim=(1.0, 1.0, 1.0),
+                   mode=["bilinear"] * len(image_keys) + ["nearest"] * len(label_keys)),
         # Ensure uniform spatial size — adjust to your data
         T.ResizeWithPadOrCropd(keys=all_keys, spatial_size=target_shape),
         # Intensity normalise images only
@@ -99,7 +100,7 @@ def get_transforms(split: str, target_shape=(192, 192, 192)):
             T.RandScaleIntensityd(keys=image_keys, factors=0.1, prob=0.5),
             T.RandShiftIntensityd(keys=image_keys, offsets=0.1, prob=0.5),
         ]
-        return T.Compose(augment + base)
+        return T.Compose(base + augment)
 
     return T.Compose(base)
 
