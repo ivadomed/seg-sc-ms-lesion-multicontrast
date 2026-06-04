@@ -92,13 +92,53 @@ def get_transforms(split: str, target_shape=(192, 192, 192)):
 
     if split == "train":
         augment = [
-            # Identical random flips applied to both timepoints
+            # ── Spatial (applied identically to both timepoints and labels) ───
+            #
+            # Mirror transform: flip each axis independently with p=0.5
             T.RandFlipd(keys=all_keys, prob=0.5, spatial_axis=0),
             T.RandFlipd(keys=all_keys, prob=0.5, spatial_axis=1),
             T.RandFlipd(keys=all_keys, prob=0.5, spatial_axis=2),
-            # Intensity jitter on images only (not labels)
-            T.RandScaleIntensityd(keys=image_keys, factors=0.1, prob=0.5),
-            T.RandShiftIntensityd(keys=image_keys, offsets=0.1, prob=0.5),
+            # Rotation ±30° (0.52 rad) on all axes, p=0.2
+            # Images: bilinear interpolation; labels: nearest-neighbour
+            T.RandRotated(
+                keys=all_keys,
+                range_x=0.52, range_y=0.52, range_z=0.52,
+                prob=0.2,
+                mode=["bilinear"] * len(image_keys) + ["nearest"] * len(label_keys),
+                padding_mode="zeros",
+            ),
+            # Scaling 0.7–1.4, p=0.2; keep_size crops/pads back to original shape
+            T.RandZoomd(
+                keys=all_keys,
+                min_zoom=0.7, max_zoom=1.4,
+                prob=0.2,
+                mode=["trilinear"] * len(image_keys) + ["nearest"] * len(label_keys),
+                keep_size=True,
+            ),
+
+            # ── Intensity (images only — never applied to labels) ─────────────
+            #
+            # Gaussian noise: nnUNet uses variance ~ U(0, 0.1) → std up to 0.316
+            T.RandGaussianNoised(keys=image_keys, mean=0.0, std=0.1, prob=0.1),
+            # Gaussian blur: sigma U(0.5, 1.0), p=0.2
+            T.RandGaussianSmoothd(
+                keys=image_keys,
+                sigma_x=(0.5, 1.0), sigma_y=(0.5, 1.0), sigma_z=(0.5, 1.0),
+                prob=0.2,
+            ),
+            # Multiplicative brightness: multiplier U(0.75, 1.25), p=0.15
+            # RandScaleIntensity multiplies by (1 + factor), so factors=0.25 → [0.75, 1.25]
+            T.RandScaleIntensityd(keys=image_keys, factors=0.25, prob=0.15),
+            # Contrast adjustment: gamma U(0.75, 1.25), p=0.15
+            T.RandAdjustContrastd(keys=image_keys, gamma=(0.75, 1.25), prob=0.15),
+            # Low-resolution simulation: downsample then upsample, p=0.25
+            T.RandSimulateLowResolutiond(
+                keys=image_keys,
+                zoom_range=(0.5, 1.0),
+                prob=0.25,
+            ),
+            # Gamma correction: gamma U(0.7, 1.5), p=0.3
+            T.RandAdjustContrastd(keys=image_keys, gamma=(0.7, 1.5), prob=0.3),
         ]
         return T.Compose(base + augment)
 
