@@ -2,7 +2,7 @@ import json
 import torch
 import numpy as np
 import nibabel as nib
-from torch.utils.data import Dataset, DataLoader
+from torch.utils.data import Dataset, DataLoader, Sampler
 from monai import transforms as T
 
 
@@ -146,7 +146,63 @@ def get_transforms(split: str, target_shape=(192, 192, 192)):
 
 
 # ------------------------------------------------------------------ #
-# 3. Custom collate — handles the string metadata fields
+# 3. Foreground oversampling sampler
+# ------------------------------------------------------------------ #
+
+class ForegroundOversampledSampler(Sampler):
+    """
+    Produces len(dataset) indices per epoch, where a fixed fraction
+    (`oversample_rate`, default 0.33) are drawn from samples that contain
+    at least one foreground lesion voxel in the target label (label2).
+    The remaining indices are drawn uniformly at random from the full dataset.
+
+    This mirrors nnUNet's foreground oversampling strategy and helps the model
+    see lesion-positive samples more frequently — critical for small, sparse
+    MS lesions where many volumes may be lesion-free.
+
+    The foreground/background split is computed once at construction by
+    scanning all label2 files; subsequent epochs reuse this index.
+    """
+
+    def __init__(self, dataset: LongitudinalLesionDataset,
+                 label_key: str = "label2",
+                 oversample_rate: float = 0.33):
+        self.n           = len(dataset)
+        self.n_fg        = round(self.n * oversample_rate)
+        self.n_rnd       = self.n - self.n_fg
+
+        # Scan label files once to identify foreground samples
+        print(f"ForegroundOversampledSampler: scanning {self.n} label files …")
+        fg_indices, bg_indices = [], []
+        for i, entry in enumerate(dataset.samples):
+            vol = nib.load(entry[label_key]).get_fdata(dtype=np.float32)
+            (fg_indices if vol.max() > 0 else bg_indices).append(i)
+
+        if not fg_indices:
+            raise RuntimeError(
+                "ForegroundOversampledSampler: no foreground samples found. "
+                "Check that label2 files contain lesion voxels."
+            )
+
+        self.fg_indices  = np.array(fg_indices)
+        self.all_indices = np.arange(self.n)
+        print(f"  → {len(fg_indices)} foreground / {len(bg_indices)} background samples.")
+
+    def __iter__(self):
+        # Draw foreground-guaranteed indices (with replacement to handle small fg sets)
+        fg_draw  = np.random.choice(self.fg_indices, size=self.n_fg,  replace=True)
+        # Draw the rest uniformly from the full dataset (without replacement)
+        rnd_draw = np.random.choice(self.all_indices, size=self.n_rnd, replace=False)
+        indices  = np.concatenate([fg_draw, rnd_draw])
+        np.random.shuffle(indices)
+        return iter(indices.tolist())
+
+    def __len__(self) -> int:
+        return self.n
+
+
+# ------------------------------------------------------------------ #
+# 4. Custom collate — handles the string metadata fields
 # ------------------------------------------------------------------ #
 
 def longitudinal_collate(batch: list) -> dict:
@@ -166,15 +222,21 @@ def longitudinal_collate(batch: list) -> dict:
 
 
 # ------------------------------------------------------------------ #
-# 4. DataLoader factory
+# 5. DataLoader factory
 # ------------------------------------------------------------------ #
 
 def get_dataloaders(json_path: str,
                     target_shape=(192, 192, 192),
                     batch_size: int = 2,
-                    num_workers: int = 4):
+                    num_workers: int = 4,
+                    oversample_rate: float = 0.33):
     """
-    Returns train, val, test DataLoaders ready for a training loop.
+    Returns (train, val, test) DataLoaders.
+
+    The training loader uses ForegroundOversampledSampler so that
+    `oversample_rate` fraction of each epoch's samples are guaranteed to
+    contain at least one foreground lesion voxel (label2 > 0).
+    Val and test loaders iterate sequentially without oversampling.
     """
     loaders = {}
     for split in ("train", "validation", "test"):
@@ -183,14 +245,26 @@ def get_dataloaders(json_path: str,
             split      = split,
             transform  = get_transforms(split, target_shape),
         )
-        loaders[split] = DataLoader(
-            ds,
-            batch_size  = batch_size,
-            shuffle     = (split == "train"),
-            num_workers = num_workers,
-            pin_memory  = True,
-            collate_fn  = longitudinal_collate,
-        )
-        # print(f"{split}: {len(ds)} pairs → {len(loaders[split])} batches")
+        if split == "train":
+            sampler = ForegroundOversampledSampler(
+                ds, label_key="label2", oversample_rate=oversample_rate
+            )
+            loaders[split] = DataLoader(
+                ds,
+                batch_size  = batch_size,
+                sampler     = sampler,        # replaces shuffle=True
+                num_workers = num_workers,
+                pin_memory  = True,
+                collate_fn  = longitudinal_collate,
+            )
+        else:
+            loaders[split] = DataLoader(
+                ds,
+                batch_size  = batch_size,
+                shuffle     = False,
+                num_workers = num_workers,
+                pin_memory  = True,
+                collate_fn  = longitudinal_collate,
+            )
 
     return loaders["train"], loaders["validation"], loaders["test"]
