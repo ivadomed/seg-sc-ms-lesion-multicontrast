@@ -19,6 +19,7 @@ from datetime import datetime
 import torch
 import torch.nn as nn
 import torch.optim as optim
+from torch.optim.lr_scheduler import LambdaLR
 import numpy as np
 import wandb
 
@@ -147,6 +148,35 @@ def validate(model, loader, criterion, device, n_classes):
 
 
 # ──────────────────────────────────────────────────────────────────────────────
+# LR scheduler
+# ──────────────────────────────────────────────────────────────────────────────
+
+class PolyLRScheduler(LambdaLR):
+    """
+    Polynomial LR decay — identical to nnUNet's PolyLRScheduler.
+
+        lr = initial_lr × (1 - epoch / max_epochs) ^ exponent
+
+    The LR decreases slowly for most of training and drops sharply near the
+    end, which empirically outperforms cosine annealing for segmentation tasks.
+
+    Args:
+        optimizer   : the SGD (or any) optimizer
+        max_epochs  : total number of training epochs
+        exponent    : polynomial exponent (nnUNet default: 0.9)
+    """
+    def __init__(self, optimizer: optim.Optimizer,
+                 max_epochs: int, exponent: float = 0.9):
+        self.max_epochs = max_epochs
+        self.exponent   = exponent
+        super().__init__(optimizer, lr_lambda=self._factor)
+
+    def _factor(self, epoch: int) -> float:
+        # epoch is 0-indexed inside LambdaLR
+        return (1 - epoch / self.max_epochs) ** self.exponent
+
+
+# ──────────────────────────────────────────────────────────────────────────────
 # CLI
 # ──────────────────────────────────────────────────────────────────────────────
 
@@ -156,7 +186,7 @@ def parse_args():
     parser.add_argument("--data",           type=str, required=True)
     parser.add_argument("--output",         type=str, required=True)
     parser.add_argument("--epochs",         type=int,   default=200)
-    parser.add_argument("--lr",             type=float, default=1e-4)
+    parser.add_argument("--lr",             type=float, default=1e-2)
     parser.add_argument("--n_classes",      type=int,   default=2)
     parser.add_argument("--wandb_project",  type=str,   default="mambaxnet-longitudinal")
     parser.add_argument("--wandb_run",      type=str,   default=None)
@@ -214,8 +244,17 @@ def main():
     logger.info(f"Trainable parameters: {n_params:,}")
 
     criterion = CombinedLoss(n_classes=args.n_classes)
-    optimizer = optim.Adam(model.parameters(), lr=args.lr)
+    optimizer = optim.SGD(
+        filter(lambda p: p.requires_grad, model.parameters()),
+        lr           = args.lr,
+        momentum     = 0.99,
+        weight_decay = 3e-5,
+        nesterov     = True,
+    )
+    scheduler = PolyLRScheduler(optimizer, max_epochs=args.epochs)
     scaler    = torch.cuda.amp.GradScaler()
+    logger.info(f"SGD | lr={args.lr} | momentum=0.99 | weight_decay=3e-5 | nesterov=True")
+    logger.info(f"PolyLR | exponent=0.9 | max_epochs={args.epochs}")
 
     best_val_dice = 0.0
     global_step   = 0
@@ -232,12 +271,14 @@ def main():
             model, val_loader, criterion, device, args.n_classes
         )
 
+        scheduler.step()
+        current_lr = scheduler.get_last_lr()[0]
         elapsed = time.perf_counter() - t0
         logger.info(
             f"Epoch {epoch}/{args.epochs} | "
             f"train loss {train_loss:.4f} dice {train_dice:.4f} | "
             f"val loss {val_loss:.4f} dice {val_dice:.4f} | "
-            f"{elapsed:.1f}s"
+            f"lr {current_lr:.2e} | {elapsed:.1f}s"
         )
 
         wandb.log({
@@ -246,6 +287,7 @@ def main():
             "train/epoch_dice": train_dice,
             "val/loss":         val_loss,
             "val/dice":         val_dice,
+            "lr":               current_lr,
             "epoch_time_s":     elapsed,
         }, step=global_step)
 
