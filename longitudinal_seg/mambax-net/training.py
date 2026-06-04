@@ -99,18 +99,22 @@ def forward_pair(model: nn.Module, batch: dict, device: torch.device):
 # Train / validate
 # ──────────────────────────────────────────────────────────────────────────────
 
-def train_one_epoch(model, loader, optimizer, criterion, device, n_classes, epoch, global_step):
+def train_one_epoch(model, loader, optimizer, criterion, device, n_classes, epoch, global_step, scaler):
     model.train()
     total_loss = 0.0
     total_dice = 0.0
 
     for batch_idx, batch in enumerate(loader):
         optimizer.zero_grad()
-        preds, targets = forward_pair(model, batch, device)
-        loss = criterion(preds, targets)
-        loss.backward()
+        
+        with torch.autocast(device_type=device.type):
+            preds, targets = forward_pair(model, batch, device)
+            loss = criterion(preds, targets)
+        scaler.scale(loss).backward()
+        scaler.unscale_(optimizer)
         nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
-        optimizer.step()
+        scaler.step(optimizer)
+        scaler.update()
 
         with torch.no_grad():
             dice = compute_dice(preds.detach(), targets, n_classes)
@@ -211,6 +215,7 @@ def main():
 
     criterion = CombinedLoss(n_classes=args.n_classes)
     optimizer = optim.Adam(model.parameters(), lr=args.lr)
+    scaler    = torch.cuda.amp.GradScaler()
 
     best_val_dice = 0.0
     global_step   = 0
@@ -221,7 +226,7 @@ def main():
         t0 = time.perf_counter()
 
         train_loss, train_dice, global_step = train_one_epoch(
-            model, train_loader, optimizer, criterion, device, args.n_classes, epoch, global_step
+            model, train_loader, optimizer, criterion, device, args.n_classes, epoch, global_step, scaler
         )
         val_loss, val_dice = validate(
             model, val_loader, criterion, device, args.n_classes
