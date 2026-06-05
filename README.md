@@ -4,7 +4,11 @@
 
 [![MSJ](https://img.shields.io/badge/MSJ-10.1177/13524585261427333-darkgreen.svg)](https://doi.org/10.1177/13524585261427333)
 
-<img src="https://github.com/user-attachments/assets/6c86548a-0a28-40e4-9d21-219ac310d867" width="500"/>
+<p float="left">
+    <img src="https://github.com/user-attachments/assets/6c86548a-0a28-40e4-9d21-219ac310d867" width="500"/>
+    <img src="https://github.com/user-attachments/assets/d78e9296-d7dc-4217-9e03-eae8d8ddebd1" width="500"/>
+</p>
+
 
 Official repository for the segmentation of multiple sclerosis (MS) spinal cord (SC) lesions.
 
