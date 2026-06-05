@@ -1,11 +1,12 @@
 """
-This code performs lesion mapping from baseline to follow-up MRI scans using a machine learning model.
+This code builds a dataset for training a model to predict lesion mapping between two timepoints.
 
 Input:
     -i: msd dataset path
     -pred: path to the folder containing the predicted segmentations (SC, lesions, centerline, levels ...)
     -gt_mappings: path to the folder containing the ground truth lesion mappings
     -o: output folder where to store the lesion matching results
+    --for-gt-lesion-seg: if specified, the labeled lesion seg come from the gt_mapping folder instead of the pred_folder
 
 Output:
     None
@@ -26,7 +27,7 @@ file_path = os.path.abspath(os.path.dirname(__file__))
 root_path = os.path.abspath(os.path.join(file_path, ".."))
 sys.path.insert(0, root_path)
 from utils import segment_sc, segment_lesions, get_centerline, get_levels, label_lesion_seg
-from tracking.map_lesions_unregistered import label_centerline, analyze_lesions, compute_lesion_location
+from tracking.track_lesion_unreg import label_centerline, analyze_lesions, compute_lesion_location
 
 def parse_args():
     parser = argparse.ArgumentParser()
@@ -34,6 +35,7 @@ def parse_args():
     parser.add_argument('-pred', '--pred', type=str, required=True, help='Path to the folder containing the predicted segmentations')
     parser.add_argument('-gt-mapping', '--gt-mapping', type=str, required=True, help='Path to the folder containing the ground truth lesion mappings')
     parser.add_argument('-o', '--output-folder', type=str, required=True, help='Path to the output folder where lesion matching results will be stored')
+    parser.add_argument('--for-gt-lesion-seg', action='store_true', help='If specified, the labeled lesion seg come from the gt_mapping folder instead of the pred_folder')
     return parser.parse_args()
 
 
@@ -111,7 +113,7 @@ def group_lesions(lesion_analysis_1, lesion_analysis_2, lesion_mapping_path):
     return lesion_analysis_1, lesion_analysis_2
 
 
-def build_dataset(input_msd_dataset, pred_folder, gt_mappings, output_folder):
+def build_dataset(input_msd_dataset, pred_folder, gt_mappings, output_folder, for_gt_lesion_seg=False):
     """
     This function is used to build the dataset for training the model and lesion mapping.
     For each lesion in the baseline scan and follow-up scan, we add them to the dataset alongside their coordinates and volume.
@@ -142,7 +144,10 @@ def build_dataset(input_msd_dataset, pred_folder, gt_mappings, output_folder):
         subject_pred_folder = os.path.join(pred_folder, subject)
 
         # Build path to lesion mapping file
-        lesion_mapping_path = os.path.join(gt_mappings, subject, "lesion_mapping.json")
+        if for_gt_lesion_seg:
+            lesion_mapping_path = os.path.join(gt_mappings, subject, "lesion-mapping_M0-M12.json")
+        else:
+            lesion_mapping_path = os.path.join(gt_mappings, subject, "lesion_mapping.json")
 
         # Build subject output folder
         subject_output_folder = os.path.join(output_folder, subject)
@@ -170,17 +175,15 @@ def build_dataset(input_msd_dataset, pred_folder, gt_mappings, output_folder):
         sc_seg_2 = os.path.join(subject_pred_folder, image_2_name.replace('.nii.gz', '_sc-seg.nii.gz'))
         centerline_1 = os.path.join(subject_pred_folder, image_1_name.replace('.nii.gz', '_centerline.nii.gz'))
         centerline_2 = os.path.join(subject_pred_folder, image_2_name.replace('.nii.gz', '_centerline.nii.gz'))
-        lesion_seg_1 =  os.path.join(subject_pred_folder, image_1_name.replace('.nii.gz', '_lesion-seg.nii.gz'))
-        lesion_seg_2 =  os.path.join(subject_pred_folder, image_2_name.replace('.nii.gz', '_lesion-seg.nii.gz'))
         levels_1 = os.path.join(subject_pred_folder, image_1_name.replace('.nii.gz', '_levels.nii.gz'))
         levels_2 = os.path.join(subject_pred_folder, image_2_name.replace('.nii.gz', '_levels.nii.gz'))
-        registered_image2_to_1 = os.path.join(subject_pred_folder, image_2_name.replace('.nii.gz', '_registered_to_' + image_1_name))
-        warping_field_img2_to_1 = os.path.join(subject_pred_folder, image_2_name.replace('.nii.gz', '_warp_to_' + image_1_name))
-        inv_warping_field_img2_to_1 = os.path.join(subject_pred_folder, image_2_name.replace('.nii.gz', '_inv_warp_to_' + image_1_name))
-        lesion_seg_2_reg = os.path.join(subject_pred_folder, image_2_name.replace('.nii.gz', '_lesion-seg-reg.nii.gz'))
-        labeled_lesion_seg_1 = os.path.join(subject_pred_folder, image_1_name.replace('.nii.gz', '_lesion-seg-labeled.nii.gz'))
-        labeled_lesion_seg_2 = os.path.join(subject_pred_folder, image_2_name.replace('.nii.gz', '_lesion-seg-labeled.nii.gz'))
-        labeled_lesion_seg_2_reg = os.path.join(subject_pred_folder, image_2_name.replace('.nii.gz', '_lesion-seg-reg-labeled.nii.gz'))
+        # The lesion segmentations are different for pred or manual lesion segs
+        if for_gt_lesion_seg:
+            labeled_lesion_seg_1 = os.path.join(gt_mappings, subject, "ses-M0", "anat",  image_1_name.replace('.nii.gz', '_lesion-manual-labeled.nii.gz'))
+            labeled_lesion_seg_2 = os.path.join(gt_mappings, subject, "ses-M12", "anat", image_2_name.replace('.nii.gz', '_lesion-manual-labeled.nii.gz'))
+        else:
+            labeled_lesion_seg_1 = os.path.join(subject_pred_folder, image_1_name.replace('.nii.gz', '_lesion-seg-labeled.nii.gz'))
+            labeled_lesion_seg_2 = os.path.join(subject_pred_folder, image_2_name.replace('.nii.gz', '_lesion-seg-labeled.nii.gz'))
 
         # We label the centerline
         labeled_centerline_1 = os.path.join(temp_folder, image_1_name.replace('.nii.gz', '_labeled-centerline.nii.gz'))
@@ -240,7 +243,10 @@ def build_dataset(input_msd_dataset, pred_folder, gt_mappings, output_folder):
     # Convert to pandas dataframe
     dataset = pd.DataFrame(dataset)
     # Save the dataset
-    dataset_path = os.path.join(output_folder, 'lesion_dataset_pred_lesion.csv')
+    if for_gt_lesion_seg:
+        dataset_path = os.path.join(output_folder, 'lesion_dataset_gt_lesion.csv')
+    else:   
+        dataset_path = os.path.join(output_folder, 'lesion_dataset_pred_lesion.csv')
     dataset.to_csv(dataset_path, index=False)
     logger.info(f"Dataset saved to {dataset_path}")
         
@@ -253,6 +259,7 @@ if __name__ == "__main__":
     pred_folder = args.pred
     gt_mappings = args.gt_mapping
     output_folder = args.output_folder
+    for_gt_lesion_seg = args.for_gt_lesion_seg
 
     # Build the dataset
-    build_dataset(input_msd_dataset, pred_folder, gt_mappings,output_folder)
+    build_dataset(input_msd_dataset, pred_folder, gt_mappings, output_folder, for_gt_lesion_seg)

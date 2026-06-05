@@ -1,6 +1,6 @@
 """
 In this script, we perform lesion mapping between two timepoints using an XGBoost model to predict lesion correspondences based on features extracted from the lesions.
-The specificity of this script is that it uses cross-validation to estimate the performance of the model on the entire dataset.
+The specificity of this script is that it uses LOOCV to estimate the performance of the model on the entire dataset.
 
 Inputs:
     - dataset_csv: Path to the csv dataset containing lesion features over time.
@@ -187,7 +187,15 @@ def main():
         'fn_scores': cv_fn_scores,
         'precision_scores': cv_precision_scores,
         'recall_scores': cv_recall_scores,
-        'f1_scores': cv_f1_scores
+        'f1_scores': cv_f1_scores, 
+        'CV_scores': {
+            'TP': int(np.sum(cv_tp_scores)),
+            'FP': int(np.sum(cv_fp_scores)),
+            'FN': int(np.sum(cv_fn_scores)),
+            'precision': float(np.mean(cv_precision_scores)),
+            'recall': float(np.mean(cv_recall_scores)),
+            'f1_score': float(np.mean(cv_f1_scores))
+        }
     }
     results_path = os.path.join(output_folder, 'cross_validation_results.json')
     with open(results_path, 'w') as f:

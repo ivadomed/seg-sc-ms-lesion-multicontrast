@@ -1,5 +1,6 @@
 """
 In this script, we perform lesion mapping between two timepoints using an XGBoost model to predict lesion correspondences based on features extracted from the lesions.
+This script is used to train the model on the entire dataset. The model will be released alongside the paper.
 
 Inputs:
     - dataset_csv: Path to the csv dataset containing lesion features over time.
@@ -74,7 +75,7 @@ def load_data():
     os.makedirs(output_folder, exist_ok=True)
 
     # Create a logger
-    logger.add(os.path.join(output_folder, 'lesion_mapping_XGB.log'))
+    logger.add(os.path.join(output_folder, 'lesion_mapping_siamese.log'))
 
     # Load dataset
     df = pd.read_csv(dataset_csv)
@@ -126,10 +127,7 @@ def load_data():
 
     # Split the dataset into training and testing sets (done on subject level to avoid data leakage)
     subjects = df_pairs['subject'].unique()
-    ## We arbitrarily choose that subjects from the Toronto site are used for testing
-    test_subjects = [s for s in subjects if 'tor' in s]
-    # val_subjects = [s for s in subjects if 'cal' in s or 'mon' in s]
-    train_subjects = [s for s in subjects if s not in test_subjects]
+    train_subjects = [s for s in subjects]
 
     # I manually set to false index 684 in lesion_pairs (because of this: https://github.com/ivadomed/ms-lesion-agnostic/issues/98)
     df_pairs.at[684, 'label'] = 0
@@ -138,30 +136,14 @@ def load_data():
     train_lesion_2_df = lesion_2_df[lesion_2_df['subject'].isin(train_subjects)]
     train_df_pairs = df_pairs[df_pairs['subject'].isin(train_subjects)]
 
-    # val_lesion_1_df = lesion_1_df[lesion_1_df['subject'].isin(val_subjects)]
-    # val_lesion_2_df = lesion_2_df[lesion_2_df['subject'].isin(val_subjects)]
-    # val_df_pairs = df_pairs[df_pairs['subject'].isin(val_subjects)]
-
-    test_lesion_1_df = lesion_1_df[lesion_1_df['subject'].isin(test_subjects)]
-    test_lesion_2_df = lesion_2_df[lesion_2_df['subject'].isin(test_subjects)]
-    test_df_pairs = df_pairs[df_pairs['subject'].isin(test_subjects)]
-
-    logger.info(f"Total subjects: {len(subjects)}, Training subjects: {len(train_subjects)}, Testing subjects: {len(test_subjects)}")
+    logger.info(f"Total subjects: {len(subjects)}")
 
     # Split the dataset into features and labels
     feature_cols = [col for col in train_lesion_1_df.columns if col not in ['subject', 'label']]
     X_train_1 = train_lesion_1_df[feature_cols]
     X_train_2 = train_lesion_2_df[feature_cols]
     y_train = train_df_pairs['label']
-    # X_val_1 = val_lesion_1_df[feature_cols]
-    # X_val_2 = val_lesion_2_df[feature_cols]
-    # y_val = val_df_pairs['label']
-    X_test_1 = test_lesion_1_df[feature_cols]
-    X_test_2 = test_lesion_2_df[feature_cols]
-    y_test = test_df_pairs['label']
     logger.info(f"Training set size: {X_train_1.shape[0]} pairs")
-    # logger.info(f"Validation set size: {X_val_1.shape[0]} pairs")
-    logger.info(f"Testing set size: {X_test_1.shape[0]} pairs")
 
     # Extract mean and std for each feature in the training set
     means = X_train_1.mean()
@@ -177,15 +159,9 @@ def load_data():
     X_train_1 = scaler.fit_transform(X_train_1)
     X_train_2 = scaler.transform(X_train_2) # Use same scaler!
 
-    # X_val_1   = scaler.transform(X_val_1)
-    # X_val_2   = scaler.transform(X_val_2)
-
-    X_test_1  = scaler.transform(X_test_1)
-    X_test_2  = scaler.transform(X_test_2)
-
     logger.info("Data normalized using StandardScaler.")
 
-    return X_train_1, X_train_2, y_train, _, _, _, X_test_1, X_test_2, y_test, output_folder, logger, means, stds
+    return X_train_1, X_train_2, y_train, output_folder, logger, means, stds
 
 
 def focal_loss(gamma=2., alpha=0.25):
@@ -265,12 +241,11 @@ def build_siamese_network(num_features_per_lesion):
     return model
 
 
-def train(X_train_1, X_train_2, y_train, X_val_1, X_val_2, y_val, X_test_1, X_test_2, y_test, output_folder, logger):
+def train(X_train_1, X_train_2, y_train, output_folder, logger):
 
     model = build_siamese_network(X_train_1.shape[1])
     optimizer = optimizers.RMSprop(learning_rate=0.001)
     # optimizer = optimizers.AdamW(learning_rate=0.001)
-
     
     # model.compile(optimizer='rmsprop' ,loss='binary_crossentropy' ,metrics=['AUC'])
     # model.compile(optimizer='rmsprop', loss='BinaryFocalCrossentropy', metrics=['AUC'])
@@ -286,31 +261,6 @@ def train(X_train_1, X_train_2, y_train, X_val_1, X_val_2, y_val, X_test_1, X_te
     class_weights_dict = {0: weights[0], 1: weights[1]}
     logger.info(f"Class weights: {class_weights_dict}")
     model.fit([X_train_1, X_train_2], y_train, epochs=500, batch_size=20, class_weight=class_weights_dict, callbacks=[TqdmCallback(verbose=0)], verbose=0)
-    # model.fit([X_train_1, X_train_2], y_train, epochs=500, batch_size=20, validation_data=([X_val_1, X_val_2], y_val), callbacks=[TqdmCallback(verbose=0)], verbose=0)
-
-    # # Compute evaluation metrics on the validation set
-    # val_results = model.predict([X_val_1, X_val_2], verbose=0)
-    # val_pred_labels = (val_results > 0.5).astype(int).flatten()
-    # tp = sum((y_val == 1) & (val_pred_labels == 1))
-    # fp = sum((y_val == 0) & (val_pred_labels == 1))
-    # fn = sum((y_val == 1) & (val_pred_labels == 0))
-    # logger.info(f"Validation set - True Positives: {tp}, False Positives: {fp}, False Negatives: {fn}")
-    # precision = tp / (tp + fp) if (tp + fp) > 0 else 0
-    # recall = tp / (tp + fn) if (tp + fn) > 0 else 0
-    # f1_score = 2 * (precision * recall) / (precision + recall) if (precision + recall) > 0 else 0
-    # logger.info(f"Validation set - Precision: {precision:.4f}, Recall: {recall:.4f}, F1 Score: {f1_score:.4f}")
-
-    # Compute TP, FP, FN on the test set
-    y_pred = model.predict([X_test_1, X_test_2])
-    y_pred_labels = (y_pred > 0.5).astype(int).flatten()
-    tp = sum((y_test == 1) & (y_pred_labels == 1))
-    fp = sum((y_test == 0) & (y_pred_labels == 1))
-    fn = sum((y_test == 1) & (y_pred_labels == 0))
-    logger.info(f"Test set - True Positives: {tp}, False Positives: {fp}, False Negatives: {fn}")
-    precision = tp / (tp + fp) if (tp + fp) > 0 else 0
-    recall = tp / (tp + fn) if (tp + fn) > 0 else 0
-    f1_score = 2 * (precision * recall) / (precision + recall) if (precision + recall) > 0 else 0
-    logger.info(f"Test set - Precision: {precision:.4f}, Recall: {recall:.4f}, F1 Score: {f1_score:.4f}")
 
     # Compute TP, FP, FN on the training set
     y_train_pred = model.predict([X_train_1, X_train_2])
