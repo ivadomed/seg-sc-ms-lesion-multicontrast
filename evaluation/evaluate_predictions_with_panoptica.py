@@ -82,10 +82,6 @@ def main():
         label = os.path.join(label_folder, pred.name)
         image = os.path.join(image_folder, pred.name).replace(".nii.gz", "_0000.nii.gz")
 
-        # Evaluate the predictions with panoptica
-        result_panoptica = evaluator.evaluate(str(pred), str(label))["ungrouped"]
-        results_panoptica[pred.name] = result_panoptica
-
         # Load the predictions and the label
         pred_data = nib.load(str(pred)).get_fdata()
         label_data = nib.load(str(label)).get_fdata()
@@ -103,17 +99,30 @@ def main():
             if conversion_dict[original_image] == image:
                 image_name = original_image
                 break
-        
+
+        # Evaluate the predictions with panoptica
+        eval_result = evaluator.evaluate(str(pred), str(label))
+        # Key varies by panoptica version; take the first available value
+        result_panoptica = next(iter(eval_result.values()))
+
+        metric_names = [
+            "n_ref_instances", "n_pred_instances", "tp", "fp", "fn", "rq",
+            "global_bin_dsc",
+            "sq", "pq", "sq_dsc", "pq_dsc", "sq_assd", "sq_rvd",
+        ]
+        results_panoptica[image_name] = {
+            m: float(getattr(result_panoptica, m, np.nan))
+            for m in metric_names
+        }
+
         # Save the dice score
         dice_scores[image_name] = dice
         ppv_scores[image_name] = ppv
         f1_scores[image_name] = f1
         sensitivity_scores[image_name] = sensitivity
 
-    # Save the panoptica results
     with open(os.path.join(output_folder, "results_panoptica.json"), "w") as f:
-        for key, value in results_panoptica.items():
-            f.write(f"{key}: {value}\n")
+        json.dump(results_panoptica, f, indent=2)
 
     # Save the results
     with open(os.path.join(output_folder, "dice_scores.txt"), "w") as f:
