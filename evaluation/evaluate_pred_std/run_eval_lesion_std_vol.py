@@ -39,6 +39,7 @@ def parse_args():
     parser.add_argument("-i", "--input-folder", type=str, required=True, help="Input folder containing nifti files")
     parser.add_argument("-o", "--output-folder", type=str, required=True, help="Output folder to save predictions and csv file")
     parser.add_argument("-model", "--path-model", type=str, required=True, help="Path to the trained nnUNet model folder")
+
     return parser.parse_args()
 
 
@@ -52,12 +53,14 @@ def load_trainer_class_if_available(path_model):
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
         if hasattr(module, "get_trainer_class"):
+            print(f"Custom trainer class found in {trainer_file}, using it for prediction.")
             return module.get_trainer_class()
     return None
 
 
 def initialize_predictor(path_model):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print(f"Using device: {device}")
     folds = [0, 1, 2, 3, 4]
     predictor = nnUNetPredictor(
         tile_step_size=0.5,
@@ -169,6 +172,11 @@ def main():
 
     input_images = sorted(str(p) for p in Path(input_folder).rglob("*.nii.gz"))
 
+    # Remove files with derivatives in the name to avoid processing segmentation files
+    input_images = [p for p in input_images if "derivative" not in p]
+    # Remove SHA256 files
+    input_images = [p for p in input_images if "SHA256" not in p]
+
     predictor = initialize_predictor(path_model)
     model_orientation = "RPI"
 
@@ -179,7 +187,7 @@ def main():
         writer = csv.DictWriter(csv_file, fieldnames=fieldnames)
         writer.writeheader()
 
-        for img_path in tqdm(input_images, desc="Evaluating lesion volume std under subtle augmentations"):
+        for img_idx, img_path in enumerate(tqdm(input_images, desc="Evaluating lesion volume std under subtle augmentations")):
             orig_orientation = get_orientation(Image(img_path))
 
             img_in = Image(img_path)
@@ -194,19 +202,19 @@ def main():
             rng = np.random.default_rng(seed=hash(img_name) % (2 ** 32))
 
             for aug_name, aug_fn in AUGMENTATIONS.items():
-                # For the first image only, the output images are also saved to visually check the effect of the augmentations and the predictions
-
                 aug_data = aug_fn(img_in.data, rng)
                 pred_bin = run_prediction(predictor, img_in, aug_data)
 
-                img_out_bin = img_in.copy()
-                img_out_bin.data = pred_bin
-                if orig_orientation != model_orientation:
-                    img_out_bin.change_orientation(orig_orientation)
+                # For the first image only, the output images are also saved to visually check the effect of the augmentations and the predictions
+                if img_idx == 0:
+                    img_out_bin = img_in.copy()
+                    img_out_bin.data = pred_bin
+                    if orig_orientation != model_orientation:
+                        img_out_bin.change_orientation(orig_orientation)
 
-                out_path = os.path.join(output_folder, "predictions", img_name, f"{img_name}_{aug_name}.nii.gz")
-                os.makedirs(os.path.dirname(out_path), exist_ok=True)
-                img_out_bin.save(out_path)
+                    out_path = os.path.join(output_folder, "predictions", img_name, f"{img_name}_{aug_name}.nii.gz")
+                    os.makedirs(os.path.dirname(out_path), exist_ok=True)
+                    img_out_bin.save(out_path)
 
                 lesion_volume = float(pred_bin.sum()) * voxel_volume
                 row[aug_name] = lesion_volume
