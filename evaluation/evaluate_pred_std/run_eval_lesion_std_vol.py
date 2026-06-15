@@ -207,14 +207,14 @@ def main():
 
                 # For the first image only, the output images are also saved to visually check the effect of the augmentations and the predictions
                 if img_idx == 0:
-                    img_out_bin = img_in.copy()
-                    img_out_bin.data = pred_bin
+                    img_out = img_in.copy()
+                    img_out.data = aug_data
                     if orig_orientation != model_orientation:
-                        img_out_bin.change_orientation(orig_orientation)
+                        img_out.change_orientation(orig_orientation)
 
                     out_path = os.path.join(output_folder, "predictions", img_name, f"{img_name}_{aug_name}.nii.gz")
                     os.makedirs(os.path.dirname(out_path), exist_ok=True)
-                    img_out_bin.save(out_path)
+                    img_out.save(out_path)
 
                 lesion_volume = float(pred_bin.sum()) * voxel_volume
                 row[aug_name] = lesion_volume
