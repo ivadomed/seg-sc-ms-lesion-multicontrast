@@ -28,6 +28,7 @@ from tqdm import tqdm
 from utils import dice_score, lesion_ppv, lesion_f1_score, lesion_sensitivity
 from panoptica import InputType, Panoptica_Evaluator
 from panoptica.metrics import Metric
+from panoptica.instance_matcher import NaiveThresholdMatching  # or IoUMatching
 
 
 def parse_args():
@@ -69,9 +70,11 @@ def main():
 
     # Initialize the panoptica evaluator
     evaluator = Panoptica_Evaluator(
-        expected_input=InputType.MATCHED_INSTANCE,
-        decision_metric=Metric.IOU,
-        decision_threshold=0.1,
+        expected_input = InputType.UNMATCHED_INSTANCE,
+        instance_matcher = NaiveThresholdMatching(
+            matching_metric = Metric.IOU,
+            matching_threshold = 0.1,
+            allow_many_to_one = True)
     )
 
     results_panoptica = {}
