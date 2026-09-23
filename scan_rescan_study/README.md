@@ -19,4 +19,5 @@ This study uses the `data_description.json` with the following structure:
 ## Scripts
  - `generate_study_files.py`: for each scan/rescan pair, computes the spinal cord segmentations, the disc labels and the warping fields between run-01 and run-02: those files will be used by other scripts
  - `evaluate_sc_seg_variability.py`: for each scan/rescan pair, compares the SC volumes over the common PAM50 slices (run-01 vs run-02, and run-01 vs run-02 registered to run-01) and saves one csv line per pair
+ - `evaluate_manual_lesion_seg_variability.py`: for each manually segmented scan/rescan pair, compares the lesion segmentations (lesion volumes and counts, volume difference, Dice after registration) and saves a csv and variability plots (all pairs, and labeled by `has_lesion`)
  
