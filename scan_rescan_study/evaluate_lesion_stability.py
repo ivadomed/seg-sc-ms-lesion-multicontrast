@@ -38,6 +38,8 @@ from tqdm import tqdm
 
 IOU_THRESHOLD = 0.1
 EXCLUDE_DIRS = {"sc_seg", "qc", "disc_seg"}
+# Corrupted acquisitions to skip during evaluation
+EXCLUDE_CASES = {"sub-003_ses-M0_acq-lower"}
 
 
 def parse_args():
@@ -126,6 +128,11 @@ def evaluate_model(model_dir: Path, bids_root: Path, output_dir: Path, acquisiti
 
         relative_path = run1_seg.relative_to(model_dir)
         subject, session = relative_path.parts[0], relative_path.parts[1]
+
+        case_key = f"{subject}_{session}_acq-{acquisition}"
+        if case_key in EXCLUDE_CASES:
+            print(f"  Skipping {case_key} (excluded, corrupted file)")
+            continue
 
         run1_img = bids_root / relative_path.parent / run1_seg.name.replace("_label-lesion_seg.nii.gz", ".nii.gz")
         run2_img = bids_root / relative_path.parent / run2_seg.name.replace("_label-lesion_seg.nii.gz", ".nii.gz")
