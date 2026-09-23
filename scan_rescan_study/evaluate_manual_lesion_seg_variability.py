@@ -1,19 +1,18 @@
 """
-Evaluates the scan-rescan variability of the manual lesion segmentations, for each pair of the input
-json which is not excluded and has a manual lesion segmentation for both runs:
+Evaluates the scan-rescan variability of the manual lesion segmentations, for each pair of
+study_files.json (output of generate_study_files.py) which has a manual lesion segmentation for both runs:
     - lesion volume and number of lesions of each run
     - lesion volume difference between runs
     - Dice between the run-01 lesion seg and the run-02 lesion seg registered to run-01
       (using the warping field of generate_study_files.py)
 
 Outputs (in the output folder):
-    - lesion_seg_variability.csv: one line per pair (including the has_lesion field of the input json)
+    - lesion_seg_variability.csv: one line per pair (including the has_lesion field)
     - lesion_seg_variability.png: variability plots of all pairs
     - lesion_seg_variability_by_lesion.png: same plots, labeled by the has_lesion field
 
 Arguments:
     -i / --input        Path to the output folder of generate_study_files.py
-    -j / --json         Path to the input json (with the has_lesion field)
     -o / --output       Path to the output folder
 
 Author: Pierre-Louis Benveniste
@@ -44,23 +43,23 @@ def load_seg(path):
     return np.asarray(img.dataobj) > 0.5, np.prod(img.header.get_zooms()[:3])
 
 
-def process_pair(entry, files, dataset, study_dir):
-    les_1, les_2 = dataset / entry["lesion_seg_run-01"], dataset / entry["lesion_seg_run-02"]
+def process_pair(pair, dataset, study_dir):
+    les_1, les_2 = dataset / pair["lesion_seg_run-01"], dataset / pair["lesion_seg_run-02"]
 
     # Register the run-02 lesion seg to run-01
-    les_2_reg = (study_dir / files["sc_seg_run-02"]).parent / les_2.name.replace(".nii.gz", "_space-run01.nii.gz")
+    les_2_reg = (study_dir / pair["sc_seg_run-02"]).parent / les_2.name.replace(".nii.gz", "_space-run01.nii.gz")
     if not les_2_reg.exists():
-        run(f"sct_apply_transfo -i {les_2} -d {dataset / entry['scan_run-01']} -w {study_dir / files['warp_run-02_to_run-01']} -x nn -o {les_2_reg}")
+        run(f"sct_apply_transfo -i {les_2} -d {dataset / pair['scan_run-01']} -w {study_dir / pair['warp_run-02_to_run-01']} -x nn -o {les_2_reg}")
 
     (seg_1, voxel_vol_1), (seg_2, voxel_vol_2), (seg_2_reg, _) = load_seg(les_1), load_seg(les_2), load_seg(les_2_reg)
     vol_1, vol_2 = seg_1.sum() * voxel_vol_1, seg_2.sum() * voxel_vol_2
     n_voxels = seg_1.sum() + seg_2_reg.sum()
 
     return {
-        "subject": entry["subject"],
-        "session": entry["session"],
-        "acquisition": entry["acquisition"],
-        "has_lesion": entry["has_lesion"],
+        "subject": pair["subject"],
+        "session": pair["session"],
+        "acquisition": pair["acquisition"],
+        "has_lesion": pair["has_lesion"],
         VOL_1: vol_1,
         VOL_2: vol_2,
         VOL_DIFF: vol_2 - vol_1,
@@ -99,23 +98,19 @@ def plot_variability(df, output, hue=None):
 def main():
     parser = argparse.ArgumentParser(description="Evaluate the scan-rescan variability of the manual lesion segmentations.")
     parser.add_argument("-i", "--input", required=True, type=Path, help="Path to the output folder of generate_study_files.py")
-    parser.add_argument("-j", "--json", required=True, type=Path, help="Path to the input json (with the has_lesion field)")
     parser.add_argument("-o", "--output", required=True, type=Path, help="Path to the output folder")
     args = parser.parse_args()
 
     study_dir = args.input.resolve()
     with open(study_dir / "study_files.json") as f:
         study = json.load(f)
-    with open(args.json) as f:
-        entries = json.load(f)
-    files = {(p["subject"], p["session"], p["acquisition"]): p for p in study["pairs"] if p["status"] == "success"}
 
     results = []
-    for entry in tqdm([e for e in entries if not e["excluded"] and e["lesion_seg_run-01"] and e["lesion_seg_run-02"]]):
+    for pair in tqdm([p for p in study["pairs"] if p["status"] == "success" and p["lesion_seg_run-01"] and p["lesion_seg_run-02"]]):
         try:
-            results.append(process_pair(entry, files[(entry["subject"], entry["session"], entry["acquisition"])], Path(study["dataset"]), study_dir))
+            results.append(process_pair(pair, Path(study["dataset"]), study_dir))
         except Exception as e:
-            print(f"Failed for {entry['subject']}/{entry['session']}/acq-{entry['acquisition']}: {e}")
+            print(f"Failed for {pair['subject']}/{pair['session']}/acq-{pair['acquisition']}: {e}")
 
     args.output.mkdir(parents=True, exist_ok=True)
     df = pd.DataFrame(results)
