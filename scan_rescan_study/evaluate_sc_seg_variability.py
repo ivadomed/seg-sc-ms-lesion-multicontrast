@@ -85,6 +85,9 @@ def main():
     parser.add_argument("-o", "--output", required=True, type=Path, help="Path to the output csv file")
     args = parser.parse_args()
 
+    # Build output folder if it does not exist
+    args.output.parent.mkdir(parents=True, exist_ok=True)
+
     study_dir = args.input.resolve()
     with open(study_dir / "study_files.json") as f:
         study = json.load(f)
