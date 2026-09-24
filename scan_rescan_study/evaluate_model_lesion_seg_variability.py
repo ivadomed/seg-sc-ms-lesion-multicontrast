@@ -18,7 +18,7 @@ Metrics:
     - Dice of each prediction relative to the manual segmentation when available
     (soft volumes and soft Dice in the soft mode)
 
-Outputs (in the output folder), with pairs labeled by focal lesion visible or not (has_lesion field):
+Outputs (in the output folder), with pairs labeled by focal lesion visible or uncertain (has_lesion field):
     - lesion_seg_variability.csv: one line per pair
     - lesion_seg_variability_native.png: lesion volumes and Bland-Altman plots (mm3 and %), run-01 vs run-02
     - lesion_seg_variability_registered.png: same, run-01 vs run-02 registered to run-01, and Dice
@@ -49,7 +49,7 @@ from tqdm import tqdm
 MODES = {"default": "", "tta": "-test-time-aug", "single-fold": "-single-fold", "soft": "-soft-seg", "soft-bin": "-soft-seg"}
 VOL_1 = "lesion_volume_run-01_mm3"
 DICE = "dice_run-02_registered_to_run-01"
-PALETTE = {"visible": "tab:orange", "not visible": "tab:blue"}
+PALETTE = {"visible": "tab:orange", "uncertain": "tab:blue"}
 
 
 def run(cmd):
@@ -70,10 +70,10 @@ def dice(seg_1, seg_2):
 
 
 def volume_diff(vol_1, vol_2, prefix):
-    """Volume difference (vol_2 - vol_1) in mm3 and in % of the mean volume (0 % if both volumes are 0)."""
+    """Absolute volume difference |vol_2 - vol_1| in mm3 and in % of the mean volume (0 % if both volumes are 0)."""
     return {
-        f"{prefix}_diff_mm3": vol_2 - vol_1,
-        f"{prefix}_diff_percent": (vol_2 - vol_1) / ((vol_1 + vol_2) / 2) * 100 if vol_1 + vol_2 > 0 else 0.0,
+        f"{prefix}_abs_diff_mm3": abs(vol_2 - vol_1),
+        f"{prefix}_abs_diff_percent": abs(vol_2 - vol_1) / ((vol_1 + vol_2) / 2) * 100 if vol_1 + vol_2 > 0 else 0.0,
     }
 
 
@@ -130,13 +130,13 @@ def plot_variability(df, prefix, vol_2, run_2_name, output, dice=False):
     axes[0].set(title="Lesion volume", xlabel="Lesion volume run-01 (mm³)", ylabel=f"Lesion volume {run_2_name} (mm³)")
 
     # Bland-Altman plots of the volume difference in mm3 and in %
-    for ax, diff, unit in ((axes[1], df[f"{prefix}_diff_mm3"], "mm³"), (axes[2], df[f"{prefix}_diff_percent"], "%")):
+    for ax, diff, unit in ((axes[1], df[f"{prefix}_abs_diff_mm3"], "mm³"), (axes[2], df[f"{prefix}_abs_diff_percent"], "%")):
         sns.scatterplot(x=mean_volume, y=diff, hue=df[hue], palette=PALETTE, ax=ax)
         mean_diff, std_diff = diff.mean(), diff.std()
-        for y, name in ((mean_diff - 1.96 * std_diff, "-1.96 SD"), (mean_diff, "mean"), (mean_diff + 1.96 * std_diff, "+1.96 SD")):
+        for y, name in ((mean_diff, "mean"), (mean_diff + 1.96 * std_diff, "+1.96 SD")):
             ax.axhline(y, color="k", linestyle="--", linewidth=1)
             ax.annotate(f"{name}: {y:.1f}", xy=(1, y), xycoords=("axes fraction", "data"), ha="right", va="bottom", fontsize=8)
-        ax.set(title=f"Bland-Altman of lesion volume ({unit})", xlabel="Mean lesion volume (mm³)", ylabel=f"Lesion volume difference {run_2_name} - run-01 ({unit})")
+        ax.set(title=f"Bland-Altman of lesion volume ({unit})", xlabel="Mean lesion volume (mm³)", ylabel=f"Absolute lesion volume difference |{run_2_name} - run-01| ({unit})")
 
     if dice:
         sns.boxplot(data=df, x=hue, y=DICE, hue=hue, palette=PALETTE, legend=False, ax=axes[3], showfliers=False)
@@ -171,7 +171,7 @@ def main():
     df = pd.DataFrame(results)
 
     # Focal lesion visible or not, from the has_lesion field (bool or string)
-    labels = {"true": "visible", "false": "not visible"}
+    labels = {"true": "visible", "false": "uncertain"}
     df["Focal lesion"] = df["has_lesion"].astype(str).str.strip().str.lower().map(labels)
 
     df.to_csv(args.output / "lesion_seg_variability.csv", index=False)
