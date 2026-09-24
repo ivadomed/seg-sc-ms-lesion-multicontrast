@@ -10,11 +10,14 @@ Two comparisons are made:
     - run-01 SC seg vs run-02 SC seg (each in its native space)
     - run-01 SC seg vs run-02 SC seg registered to run-01 (processed with the run-01 image and disc labels)
 
-Output: a csv with one line per pair (including the has_lesion field of the input json).
+Outputs (in the output folder):
+    - sc_seg_variability.csv: one line per pair (including the has_lesion field of the input json)
+    - sc_volume_diff_percent.png: scatter plots of the SC volume percentage difference (native and
+      registered side by side, same scales)
 
 Arguments:
     -i / --input        Path to the output folder of generate_study_files.py
-    -o / --output       Path to the output csv file
+    -o / --output       Path to the output folder
 
 Author: Pierre-Louis Benveniste
 """
@@ -23,7 +26,9 @@ import argparse
 import json
 import os
 from pathlib import Path
+import matplotlib.pyplot as plt
 import pandas as pd
+import seaborn as sns
 from tqdm import tqdm
 
 
@@ -82,11 +87,11 @@ def process_pair(pair, dataset, study_dir):
 def main():
     parser = argparse.ArgumentParser(description="Evaluate the scan-rescan variability of the SC segmentation volume in the PAM50 space.")
     parser.add_argument("-i", "--input", required=True, type=Path, help="Path to the output folder of generate_study_files.py")
-    parser.add_argument("-o", "--output", required=True, type=Path, help="Path to the output csv file")
+    parser.add_argument("-o", "--output", required=True, type=Path, help="Path to the output folder")
     args = parser.parse_args()
 
     # Build output folder if it does not exist
-    args.output.parent.mkdir(parents=True, exist_ok=True)
+    args.output.mkdir(parents=True, exist_ok=True)
 
     study_dir = args.input.resolve()
     with open(study_dir / "study_files.json") as f:
@@ -99,8 +104,21 @@ def main():
         except Exception as e:
             print(f"Failed for {pair['subject']}/{pair['session']}/acq-{pair['acquisition']}: {e}")
 
-    pd.DataFrame(results).to_csv(args.output, index=False)
+    df = pd.DataFrame(results)
+    df.to_csv(args.output / "sc_seg_variability.csv", index=False)
     print(f"Results of {len(results)} pairs saved to {args.output}")
+
+    # Scatter plot of the SC volume percentage difference (native and registered)
+    fig, axes = plt.subplots(1, 2, figsize=(14, 5), sharex=True, sharey=True)
+    for ax, prefix in zip(axes, ("native", "registered")):
+        sns.scatterplot(x=(df[f"{prefix}_sc_volume_run-01_mm3"] + df[f"{prefix}_sc_volume_run-02_mm3"]) / 2,
+                        y=df[f"{prefix}_sc_volume_abs_diff_percent"], hue=df["acquisition"], ax=ax)
+        ax.set(title=f"SC volume difference in PAM50 ({prefix})", xlabel="Mean SC volume", ylabel="Absolute volume difference (%)")
+        ax.yaxis.grid(True, linestyle="--", alpha=0.3)
+        ax.set_axisbelow(True)
+    fig.tight_layout()
+    fig.savefig(args.output / "sc_volume_diff_percent.png", dpi=200)
+    plt.close(fig)
 
 
 if __name__ == "__main__":
