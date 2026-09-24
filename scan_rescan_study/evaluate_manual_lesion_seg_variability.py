@@ -2,14 +2,16 @@
 Evaluates the scan-rescan variability of the manual lesion segmentations, for each pair of
 study_files.json (output of generate_study_files.py) which has a manual lesion segmentation for both runs:
     - lesion volume and number of lesions of each run
-    - lesion volume difference between runs
+    - lesion volume difference (mm3 and %) between run-01 and run-02, and between run-01 and run-02
+      registered to run-01 (using the warping field of generate_study_files.py)
     - Dice between the run-01 lesion seg and the run-02 lesion seg registered to run-01
-      (using the warping field of generate_study_files.py)
 
-Outputs (in the output folder):
-    - lesion_seg_variability.csv: one line per pair (including the has_lesion field)
-    - lesion_seg_variability.png: variability plots of all pairs
-    - lesion_seg_variability_by_lesion.png: same plots, labeled by the has_lesion field
+Outputs (in the output folder), with pairs labeled by focal lesion visible or not (has_lesion field):
+    - lesion_seg_variability.csv: one line per pair
+    - lesion_seg_variability_native.png: lesion volumes and Bland-Altman plots (mm3 and %), run-01 vs run-02
+    - lesion_seg_variability_registered.png: same, run-01 vs run-02 registered to run-01, and Dice
+    - lesion_seg_variability_native_visible.png and lesion_seg_variability_registered_visible.png: same
+      plots, only for the pairs with visible focal lesions
 
 Arguments:
     -i / --input        Path to the output folder of generate_study_files.py
@@ -30,7 +32,9 @@ import seaborn as sns
 from scipy import ndimage
 from tqdm import tqdm
 
-VOL_1, VOL_2, VOL_DIFF = "lesion_volume_run-01_mm3", "lesion_volume_run-02_mm3", "lesion_volume_diff_mm3"
+VOL_1 = "lesion_volume_run-01_mm3"
+DICE = "dice_run-02_registered_to_run-01"
+PALETTE = {"visible": "tab:orange", "not visible": "tab:blue"}
 
 
 def run(cmd):
@@ -43,6 +47,14 @@ def load_seg(path):
     return np.asarray(img.dataobj) > 0.5, np.prod(img.header.get_zooms()[:3])
 
 
+def volume_diff(vol_1, vol_2, prefix):
+    """Volume difference (vol_2 - vol_1) in mm3 and in % of the mean volume (0 % if both volumes are 0)."""
+    return {
+        f"{prefix}_diff_mm3": vol_2 - vol_1,
+        f"{prefix}_diff_percent": (vol_2 - vol_1) / ((vol_1 + vol_2) / 2) * 100 if vol_1 + vol_2 > 0 else 0.0,
+    }
+
+
 def process_pair(pair, dataset, study_dir):
     les_1, les_2 = dataset / pair["lesion_seg_run-01"], dataset / pair["lesion_seg_run-02"]
 
@@ -52,7 +64,7 @@ def process_pair(pair, dataset, study_dir):
         run(f"sct_apply_transfo -i {les_2} -d {dataset / pair['scan_run-01']} -w {study_dir / pair['warp_run-02_to_run-01']} -x nn -o {les_2_reg}")
 
     (seg_1, voxel_vol_1), (seg_2, voxel_vol_2), (seg_2_reg, _) = load_seg(les_1), load_seg(les_2), load_seg(les_2_reg)
-    vol_1, vol_2 = seg_1.sum() * voxel_vol_1, seg_2.sum() * voxel_vol_2
+    vol_1, vol_2, vol_2_reg = seg_1.sum() * voxel_vol_1, seg_2.sum() * voxel_vol_2, seg_2_reg.sum() * voxel_vol_1
     n_voxels = seg_1.sum() + seg_2_reg.sum()
 
     return {
@@ -60,35 +72,41 @@ def process_pair(pair, dataset, study_dir):
         "session": pair["session"],
         "acquisition": pair["acquisition"],
         "has_lesion": pair["has_lesion"],
-        VOL_1: vol_1,
-        VOL_2: vol_2,
-        VOL_DIFF: vol_2 - vol_1,
-        "lesion_volume_abs_diff_percent": abs(vol_2 - vol_1) / ((vol_1 + vol_2) / 2) * 100 if vol_1 + vol_2 > 0 else np.nan,
         "lesion_count_run-01": ndimage.label(seg_1, structure=np.ones((3, 3, 3)))[1],
         "lesion_count_run-02": ndimage.label(seg_2, structure=np.ones((3, 3, 3)))[1],
-        "dice_run-02_registered_to_run-01": 2 * (seg_1 & seg_2_reg).sum() / n_voxels if n_voxels > 0 else np.nan,
+        VOL_1: vol_1,
+        "lesion_volume_run-02_mm3": vol_2,
+        **volume_diff(vol_1, vol_2, "lesion_volume"),
+        "lesion_volume_run-02_registered_mm3": vol_2_reg,
+        **volume_diff(vol_1, vol_2_reg, "lesion_volume_registered"),
+        DICE: 2 * (seg_1 & seg_2_reg).sum() / n_voxels if n_voxels > 0 else 1.0,
     }
 
 
-def plot_variability(df, output, hue=None):
-    """Plots the lesion volumes of both runs, their Bland-Altman plot and the Dice scores."""
-    df = df.assign(mean_volume=(df[VOL_1] + df[VOL_2]) / 2)
-    fig, axes = plt.subplots(1, 3, figsize=(18, 5))
+def plot_variability(df, prefix, vol_2, run_2_name, output, dice=False):
+    """Plots the lesion volumes, their Bland-Altman plots (mm3 and %) and optionally the Dice, labeled by focal lesion."""
+    hue = "Focal lesion"
+    mean_volume = (df[VOL_1] + df[vol_2]) / 2
+    fig, axes = plt.subplots(1, 4 if dice else 3, figsize=(24 if dice else 18, 5))
 
-    sns.scatterplot(data=df, x=VOL_1, y=VOL_2, hue=hue, ax=axes[0])
-    max_vol = df[[VOL_1, VOL_2]].max().max()
+    sns.scatterplot(data=df, x=VOL_1, y=vol_2, hue=hue, palette=PALETTE, ax=axes[0])
+    max_vol = df[[VOL_1, vol_2]].max().max()
     axes[0].plot([0, max_vol], [0, max_vol], "k--", linewidth=1)
-    axes[0].set_title("Lesion volume")
+    axes[0].set(title="Lesion volume", xlabel="Lesion volume run-01 (mm³)", ylabel=f"Lesion volume {run_2_name} (mm³)")
 
-    sns.scatterplot(data=df, x="mean_volume", y=VOL_DIFF, hue=hue, ax=axes[1], legend=False)
-    mean_diff, std_diff = df[VOL_DIFF].mean(), df[VOL_DIFF].std()
-    for y in (mean_diff - 1.96 * std_diff, mean_diff, mean_diff + 1.96 * std_diff):
-        axes[1].axhline(y, color="k", linestyle="--", linewidth=1)
-    axes[1].set_title("Bland-Altman of lesion volume (run-02 - run-01)")
+    # Bland-Altman plots of the volume difference in mm3 and in %
+    for ax, diff, unit in ((axes[1], df[f"{prefix}_diff_mm3"], "mm³"), (axes[2], df[f"{prefix}_diff_percent"], "%")):
+        sns.scatterplot(x=mean_volume, y=diff, hue=df[hue], palette=PALETTE, ax=ax)
+        mean_diff, std_diff = diff.mean(), diff.std()
+        for y, name in ((mean_diff - 1.96 * std_diff, "-1.96 SD"), (mean_diff, "mean"), (mean_diff + 1.96 * std_diff, "+1.96 SD")):
+            ax.axhline(y, color="k", linestyle="--", linewidth=1)
+            ax.annotate(f"{name}: {y:.1f}", xy=(1, y), xycoords=("axes fraction", "data"), ha="right", va="bottom", fontsize=8)
+        ax.set(title=f"Bland-Altman of lesion volume ({unit})", xlabel="Mean lesion volume (mm³)", ylabel=f"Lesion volume difference {run_2_name} - run-01 ({unit})")
 
-    sns.boxplot(data=df, x=hue, y="dice_run-02_registered_to_run-01", ax=axes[2], showfliers=False)
-    sns.stripplot(data=df, x=hue, y="dice_run-02_registered_to_run-01", ax=axes[2], color="k")
-    axes[2].set_title("Dice (run-02 registered to run-01)")
+    if dice:
+        sns.boxplot(data=df, x=hue, y=DICE, hue=hue, palette=PALETTE, legend=False, ax=axes[3], showfliers=False)
+        sns.stripplot(data=df, x=hue, y=DICE, ax=axes[3], color="k")
+        axes[3].set(title="Dice (run-02 registered to run-01)", ylabel="Dice")
 
     fig.tight_layout()
     fig.savefig(output, dpi=200)
@@ -114,10 +132,20 @@ def main():
 
     args.output.mkdir(parents=True, exist_ok=True)
     df = pd.DataFrame(results)
+
+    # Focal lesion visible or not, from the has_lesion field (bool or string)
+    labels = {"true": "visible", "false": "not visible"}
+    df["Focal lesion"] = df["has_lesion"].astype(str).str.strip().str.lower().map(labels)
+
     df.to_csv(args.output / "lesion_seg_variability.csv", index=False)
-    plot_variability(df, args.output / "lesion_seg_variability.png")
-    df["lesion"] = df["has_lesion"].map({True: "lesion", False: "no lesion"}).fillna("unknown")
-    plot_variability(df, args.output / "lesion_seg_variability_by_lesion.png", hue="lesion")
+
+    # Only plot the labeled pairs, so that the Bland-Altman lines are computed on the plotted points
+    # (all labeled pairs, and only the pairs with visible focal lesions)
+    df = df.dropna(subset=["Focal lesion"])
+    for suffix, df_plot in (("", df), ("_visible", df[df["Focal lesion"] == "visible"])):
+        plot_variability(df_plot, "lesion_volume", "lesion_volume_run-02_mm3", "run-02", args.output / f"lesion_seg_variability_native{suffix}.png")
+        plot_variability(df_plot, "lesion_volume_registered", "lesion_volume_run-02_registered_mm3", "run-02 registered",
+                         args.output / f"lesion_seg_variability_registered{suffix}.png", dice=True)
     print(f"Results of {len(results)} pairs saved to {args.output}")
 
 
