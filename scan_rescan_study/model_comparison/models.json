@@ -1,0 +1,46 @@
+{
+    "r20250909": {
+        "release": "r20250909",
+        "Description": "Model published alongside MSJ paper.",
+        "url": {
+            "model_fold0": ["https://github.com/ivadomed/seg-sc-ms-lesion-multicontrast/releases/download/r20250909/model_fold0.zip"],
+            "model_fold1": ["https://github.com/ivadomed/seg-sc-ms-lesion-multicontrast/releases/download/r20250909/model_fold1.zip"],
+            "model_fold2": ["https://github.com/ivadomed/seg-sc-ms-lesion-multicontrast/releases/download/r20250909/model_fold2.zip"],
+            "model_fold3": ["https://github.com/ivadomed/seg-sc-ms-lesion-multicontrast/releases/download/r20250909/model_fold3.zip"],
+            "model_fold4": ["https://github.com/ivadomed/seg-sc-ms-lesion-multicontrast/releases/download/r20250909/model_fold4.zip"]
+        }
+    },
+    "r20260528": {
+        "release": "r20260528",
+        "Description": "Same model training as MSJ but with additional WMn data.",
+        "url": {
+            "model_fold0": ["https://github.com/ivadomed/seg-sc-ms-lesion-multicontrast/releases/download/r20260528/model_fold0.zip"],
+            "model_fold1": ["https://github.com/ivadomed/seg-sc-ms-lesion-multicontrast/releases/download/r20260528/model_fold1.zip"],
+            "model_fold2": ["https://github.com/ivadomed/seg-sc-ms-lesion-multicontrast/releases/download/r20260528/model_fold2.zip"],
+            "model_fold3": ["https://github.com/ivadomed/seg-sc-ms-lesion-multicontrast/releases/download/r20260528/model_fold3.zip"],
+            "model_fold4": ["https://github.com/ivadomed/seg-sc-ms-lesion-multicontrast/releases/download/r20260528/model_fold4.zip"]
+        }
+    },
+    "r20260629": {
+        "release": "r20260629",
+        "Description": "Same model training as MSJ but on cropped images.",
+        "url": {
+            "model_fold0": ["https://github.com/ivadomed/seg-sc-ms-lesion-multicontrast/releases/download/r20260629/model_fold0.zip"],
+            "model_fold1": ["https://github.com/ivadomed/seg-sc-ms-lesion-multicontrast/releases/download/r20260629/model_fold1.zip"],
+            "model_fold2": ["https://github.com/ivadomed/seg-sc-ms-lesion-multicontrast/releases/download/r20260629/model_fold2.zip"],
+            "model_fold3": ["https://github.com/ivadomed/seg-sc-ms-lesion-multicontrast/releases/download/r20260629/model_fold3.zip"],
+            "model_fold4": ["https://github.com/ivadomed/seg-sc-ms-lesion-multicontrast/releases/download/r20260629/model_fold4.zip"]
+        }
+    },
+    "r20260703": {
+        "release": "r20260703",
+        "Description": "Same model training as MSJ but on cropped images and resampled at 0.5mm iso.",
+        "url": {
+            "model_fold0": ["https://github.com/ivadomed/seg-sc-ms-lesion-multicontrast/releases/download/r20260703/model_fold0.zip"],
+            "model_fold1": ["https://github.com/ivadomed/seg-sc-ms-lesion-multicontrast/releases/download/r20260703/model_fold1.zip"],
+            "model_fold2": ["https://github.com/ivadomed/seg-sc-ms-lesion-multicontrast/releases/download/r20260703/model_fold2.zip"],
+            "model_fold3": ["https://github.com/ivadomed/seg-sc-ms-lesion-multicontrast/releases/download/r20260703/model_fold3.zip"],
+            "model_fold4": ["https://github.com/ivadomed/seg-sc-ms-lesion-multicontrast/releases/download/r20260703/model_fold4.zip"]
+        }
+    }
+}
