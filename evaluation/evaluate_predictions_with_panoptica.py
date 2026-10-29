@@ -86,8 +86,19 @@ def main():
         image = os.path.join(image_folder, pred.name).replace(".nii.gz", "_0000.nii.gz")
 
         # Load the predictions and the label
-        pred_data = nib.load(str(pred)).get_fdata()
-        label_data = nib.load(str(label)).get_fdata()
+        pred_img = nib.load(str(pred))
+        label_img = nib.load(str(label))
+        pred_data = pred_img.get_fdata()
+        label_data = label_img.get_fdata()
+
+        # Panoptica requires exactly matching affines: tolerate float precision differences
+        # (e.g. from nnUNet resaving) by giving the prediction the label's affine
+        if pred_img.shape != label_img.shape:
+            raise ValueError(f"Shape mismatch between {pred} and {label}: {pred_img.shape} vs {label_img.shape}")
+        if not np.allclose(pred_img.affine, label_img.affine, atol=1e-2):
+            raise ValueError(f"Affine mismatch between {pred} and {label}:\n{pred_img.affine}\nvs\n{label_img.affine}")
+        pred_img_aligned = nib.Nifti1Image(np.asanyarray(pred_img.dataobj).astype(np.uint8), label_img.affine)
+        label_img_aligned = nib.Nifti1Image(np.asanyarray(label_img.dataobj).astype(np.uint8), label_img.affine)
 
         # Compute dice score
         dice = dice_score(pred_data, label_data)
@@ -96,14 +107,15 @@ def main():
         sensitivity = lesion_sensitivity(label_data, pred_data)
 
         # Get initial image name from conversion dict
+        # Match on folder + filename: imagesTr and imagesTs share filenames (both counters start at 001)
         image_name = None
-        for original_image in conversion_dict:            
-            if conversion_dict[original_image].split('/')[-1] == image.split('/')[-1]:
+        for original_image in conversion_dict:
+            if Path(conversion_dict[original_image]).parts[-2:] == Path(image).parts[-2:]:
                 image_name = original_image
                 break
 
         # Evaluate the predictions with panoptica
-        eval_result = evaluator.evaluate(str(pred), str(label))
+        eval_result = evaluator.evaluate(pred_img_aligned, label_img_aligned)
         # Key varies by panoptica version; take the first available value
         result_panoptica = next(iter(eval_result.values()))
 

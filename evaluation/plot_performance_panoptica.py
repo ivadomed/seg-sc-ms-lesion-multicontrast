@@ -92,7 +92,13 @@ def main():
     stats_lines = []
 
     for metric, title, ylim in metrics_to_plot:
-        plot_df = df.dropna(subset=[metric, "contrast_count"])
+        # Infinite values (e.g. ASSD for cases with no TP) break mean/std: exclude them
+        n_inf = np.isinf(df[metric].astype(float)).sum()
+        if n_inf > 0:
+            line = f"  {metric}: excluding {n_inf} case(s) with infinite value (no matched lesion)"
+            print(line)
+            stats_lines.append(line)
+        plot_df = df.replace([np.inf, -np.inf], np.nan).dropna(subset=[metric, "contrast_count"])
         if plot_df.empty:
             print(f"No data for {metric}, skipping.")
             continue
