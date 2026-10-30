@@ -42,5 +42,16 @@
             "model_fold3": ["https://github.com/ivadomed/seg-sc-ms-lesion-multicontrast/releases/download/r20260703/model_fold3.zip"],
             "model_fold4": ["https://github.com/ivadomed/seg-sc-ms-lesion-multicontrast/releases/download/r20260703/model_fold4.zip"]
         }
+    },
+    "r20261029": {
+        "release": "r20261029",
+        "Description": "Molel same as MSJ but trained on 10,000 epochs with AugLab DA",
+        "url": {
+            "model_fold0": ["https://github.com/ivadomed/seg-sc-ms-lesion-multicontrast/releases/download/r20261029/model_fold0.zip"],
+            "model_fold1": ["https://github.com/ivadomed/seg-sc-ms-lesion-multicontrast/releases/download/r20261029/model_fold1.zip"],
+            "model_fold2": ["https://github.com/ivadomed/seg-sc-ms-lesion-multicontrast/releases/download/r20261029/model_fold2.zip"],
+            "model_fold3": ["https://github.com/ivadomed/seg-sc-ms-lesion-multicontrast/releases/download/r20261029/model_fold3.zip"],
+            "model_fold4": ["https://github.com/ivadomed/seg-sc-ms-lesion-multicontrast/releases/download/r20261029/model_fold4.zip"]
+        }
     }
 }
