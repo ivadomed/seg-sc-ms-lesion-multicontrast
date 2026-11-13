@@ -1,203 +1,125 @@
 """
-Takes an nnU-Net format dataset and produces a duplicate with SC-cropped images and labels.
+Crop every case of an nnU-Net dataset around the spinal canal or spinal cord.
 
-Detection is run on the _0000 channel of each case; the same bounding box is applied to all
-channels of that case and to the corresponding label.  After cropping, every label is validated
-with check_label_crop and a CSV + JSON quality-control report is written alongside the output.
-
-Usage:
-    python crop_nnunet_dataset.py -i /path/to/DatasetXXX_Name -o /path/to/output [options]
+The structure is detected with YOLO (via sc_crop.py) on channel _0000, and the
+same physical bounding box is then applied to every channel and to the label.
 
 Arguments:
-    -i / --input        Path to the source nnU-Net dataset directory
-    -o / --output       Path for the cropped output dataset (created if absent)
-    --pad-sup           Superior padding in mm              (default: 40)
-    --pad-inf           Inferior padding in mm              (default: 100)
-    --pad-lr            Left-Right padding in mm            (default: 20)
-    --pad-ap            Anterior-Posterior padding in mm    (default: 20)
-    --device            PyTorch device for SC detection, e.g. "cuda", "cuda:0", "mps"
-                        (default: CPU via ONNX Runtime)
+    -i, --input: Source nnU-Net dataset directory
+    -o, --output: Output directory for cropped dataset
+    -m, --model: Path to YOLO weights (best.pt)
+    -s, --structure: Structure to crop around (canal or sc)
+    --rgb: Pseudo-RGB slices (if model was trained on RGB)
+    --conf: Confidence threshold(s) for YOLO predictions
+    --margin: Margin added in all three directions (mm)
+    --sc-crop-dir: Directory containing sc_crop.py
 
-Example:
-    python crop_nnunet_dataset.py \\
-        -i /data/Dataset101_msLesionAgnostic \\
-        -o /data/Dataset101_msLesionAgnostic_CropSC
+Author: Pierre-Louis Benveniste
 """
 
 import argparse
-import json
+import re
 import shutil
 import sys
-from pathlib import Path
 from collections import defaultdict
-from concurrent.futures import ProcessPoolExecutor, as_completed
+from pathlib import Path
 
 import nibabel as nib
-import tqdm
+import numpy as np
+from tqdm import tqdm
+from ultralytics import YOLO
 
-from sc_crop import CropReport, check_label_crop, crop, detect
+# nnU-Net image files are named <case_id>_<4-digit channel>.nii.gz; labels are <case_id>.nii.gz
+CHANNEL_RE = re.compile(r"^(?P<case>.+)_\d{4}\.nii\.gz$")
+SPLITS = [("imagesTr", "labelsTr"), ("imagesTs", "labelsTs")]
 
-
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
-def _find_cases(split_dir: Path):
-    """Return a dict  case_id -> sorted list of channel paths  for a split folder."""
-    if not split_dir.exists():
-        return {}
-    cases = defaultdict(list)
-    for p in sorted(split_dir.glob("*.nii.gz")):
-        # strip _XXXX channel suffix → base id
-        stem = p.name.replace(".nii.gz", "")
-        if "_0000" in stem:
-            case_id = stem.rsplit("_", 1)[0]
-        else:
-            case_id = stem
-        cases[case_id].append(p)
-    return dict(cases)
-
-
-def _process_case(
-    case_id: str,
-    image_paths: list,
-    label_path: Path | None,
-    out_images_dir: Path,
-    out_labels_dir: Path | None,
-    pad: dict,
-    device: str | None = None,
-):
-    """
-    Detect SC on the first channel, crop all channels and the label, run QC.
-    Returns (case_id, qc_dict | None, error_message | None).
-    """
-    try:
-        # Detect on the first (or only) channel
-        use_onnx = device is None
-        bbox = detect(image_paths[0], **pad, use_onnx=use_onnx, device=device)
-
-        # Crop every channel
-        for img_path in image_paths:
-            cropped = crop(nib.load(img_path), bbox)
-            nib.save(cropped, out_images_dir / img_path.name)
-
-        qc = None
-        if label_path is not None and out_labels_dir is not None:
-            label_nii = nib.load(label_path)
-            qc = check_label_crop(label_nii, bbox)
-
-            if not qc["ok"]:
-                # Copy original files unchanged
-                for img_path in image_paths:
-                    shutil.copy2(img_path, out_images_dir / img_path.name)
-                shutil.copy2(label_path, out_labels_dir / label_path.name)
-                return case_id, qc, None
-
-            cropped_label = crop(label_nii, bbox)
-            nib.save(cropped_label, out_labels_dir / label_path.name)
-
-        return case_id, qc, None
-
-    except Exception as exc:
-        return case_id, None, str(exc)
-
-
-# ---------------------------------------------------------------------------
-# Main
-# ---------------------------------------------------------------------------
 
 def parse_args():
-    p = argparse.ArgumentParser(description="Crop an nnU-Net dataset to the spinal cord.")
-    p.add_argument("-i", "--input", required=True, help="Source nnU-Net dataset directory")
-    p.add_argument("-o", "--output", required=True, help="Output directory for cropped dataset")
-    p.add_argument("--pad-sup",  type=float, default=40,  help="Superior padding mm")
-    p.add_argument("--pad-inf",  type=float, default=100, help="Inferior padding mm")
-    p.add_argument("--pad-rl", type=float, default=20,  help="Left-Right padding mm")
-    p.add_argument("--pad-ap",  type=float, default=20,  help="Anterior-Posterior padding mm")
-    p.add_argument("--device", type=str, default=None,
-                   help='PyTorch device for SC detection (e.g. "cuda", "cuda:0", "mps"). '
-                        'Omit to use CPU via ONNX Runtime.')
+    p = argparse.ArgumentParser(description="Crop an nnU-Net dataset using sc_crop.py")
+    p.add_argument("-i", "--input", required=True, type=Path, help="Source nnU-Net dataset directory")
+    p.add_argument("-o", "--output", required=True, type=Path, help="Output directory for cropped dataset")
+    p.add_argument("-m", "--model", required=True, type=Path, help="Path to YOLO weights (best.pt)")
+    p.add_argument("-s", "--structure", choices=["canal", "sc"], default="canal", help="Structure to crop around")
+    p.add_argument("--rgb", action="store_true", help="Pseudo-RGB slices (if model was trained on RGB)")
+    p.add_argument("--conf", type=float, nargs="+", default=[0.25], help="Confidence threshold(s)")
+    p.add_argument("--margin", type=float, nargs="+", default=[0], help="Margin added in all three directions (mm)")
+    p.add_argument("--sc-crop-dir", required=True, type=Path, help="Directory containing sc_crop.py")
     return p.parse_args()
+
+
+def find_cases(images_dir):
+    """Return {case_id: [channel paths, sorted so that _0000 comes first]}."""
+    cases = defaultdict(list)
+    for path in sorted(images_dir.glob("*.nii.gz")):
+        match = CHANNEL_RE.match(path.name)
+        if match is None:
+            tqdm.write(f"  Skipping {path.name}: no _XXXX channel suffix")
+            continue
+        cases[match["case"]].append(path)
+    return cases
+
+
+def crop_case(sc_crop, model, args, image_paths, label_path, out_images, out_labels):
+    """Detect the structure on channel _0000, then crop all channels and the label with that box."""
+    ref = sc_crop.resample_image(image_paths[0])
+    slices = sc_crop.cut_slices(np.asarray(ref.dataobj), args.rgb)
+    preds = sc_crop.predict_slices(model, slices, sc_crop.get_thresholds(args.conf, model.names))
+    box = sc_crop.find_box(preds, sc_crop.STRUCTURES[args.structure], ref.shape, args.margin)
+    if box is None:
+        raise ValueError(f"no {args.structure} detected on {image_paths[0].name}")
+
+    targets = [(p, out_images) for p in image_paths]
+    if label_path is not None:
+        targets.append((label_path, out_labels))
+
+    # Compute every crop before writing anything, so a failing case leaves no partial output
+    crops = []
+    for path, out_dir in targets:
+        img = nib.load(path)
+        crop = sc_crop.to_image_voxels(*box, ref.affine, img)
+        if any(s.stop <= s.start for s in crop):
+            raise ValueError(f"crop box falls outside {path.name}")
+        crops.append((img.slicer[crop], out_dir / path.name))
+
+    for cropped, out_path in crops:
+        nib.save(cropped, out_path)
 
 
 def main():
     args = parse_args()
-    src = Path(args.input).resolve()
-    dst = Path(args.output).resolve()
 
-    if not src.exists():
-        sys.exit(f"Input dataset not found: {src}")
+    sc_crop_dir = args.sc_crop_dir.resolve()
+    sys.path.insert(0, str(sc_crop_dir))
+    import sc_crop
 
-    pad = dict(
-        pad_superior=args.pad_sup,
-        pad_inferior=args.pad_inf,
-        pad_rl=args.pad_rl,
-        pad_ap=args.pad_ap,
-    )
+    src, dst = args.input.resolve(), args.output.resolve()
+    dst.mkdir(parents=True, exist_ok=True)
 
-    # Discover splits present in the source dataset
-    splits = [
-        ("imagesTr", "labelsTr"),
-        ("imagesTs", "labelsTs"),
-    ]
-
-    report = CropReport()
+    model = YOLO(str(args.model))  # load once, not once per case
     errors = []
 
-    for images_split, labels_split in splits:
-        src_images_dir = src / images_split
-        src_labels_dir = src / labels_split
-        dst_images_dir = dst / images_split
-        dst_labels_dir = dst / labels_split
+    for images_name, labels_name in SPLITS:
+        images_dir, labels_dir = src / images_name, src / labels_name
+        out_images, out_labels = dst / images_name, dst / labels_name
+        out_images.mkdir(exist_ok=True)
+        out_labels.mkdir(exist_ok=True)
 
-        if not src_images_dir.exists():
-            continue
+        cases = find_cases(images_dir)
+        for case_id, image_paths in tqdm(sorted(cases.items()), desc=images_name):
+            label_path = labels_dir / f"{case_id}.nii.gz"
+            try:
+                crop_case(sc_crop, model, args, image_paths, label_path, out_images, out_labels)
+            except Exception as exc:
+                errors.append(f"{case_id}: {exc}")
+                tqdm.write(f"  WARNING {errors[-1]}")
 
-        dst_images_dir.mkdir(parents=True, exist_ok=True)
-        if src_labels_dir.exists():
-            dst_labels_dir.mkdir(parents=True, exist_ok=True)
-
-        image_cases = _find_cases(src_images_dir)
-        label_cases = _find_cases(src_labels_dir) if src_labels_dir.exists() else {}
-        print(f"\nProcessing {images_split}: {len(image_cases)} cases")
-
-        tasks = []
-        for case_id, image_paths in sorted(image_cases.items()):
-            label_paths = label_cases.get(case_id, [])
-            label_path = label_paths[0] if label_paths else None
-            out_lbl_dir = dst_labels_dir if src_labels_dir.exists() else None
-            tasks.append((case_id, image_paths, label_path, dst_images_dir, out_lbl_dir))
-
-        # Run sc detection, cropping and QC
-        for case_id, image_paths, label_path, out_img, out_lbl in tqdm.tqdm(tasks, desc=images_split):
-            cid, qc, err = _process_case(case_id, image_paths, label_path, out_img, out_lbl, pad, args.device)
-            if qc is not None and label_path is not None:
-                report.add(label_path, qc)
-            if err:
-                errors.append(f"{cid}: {err}")
-                print(f"  WARNING {cid}: {err}")
-
-    # Copy dataset.json if present
-    ds_json = src / "dataset.json"
-    if ds_json.exists():
-        shutil.copy2(ds_json, dst / "dataset.json")
-
-    # Write QC report
-    if len(report) > 0:
-        dst.mkdir(parents=True, exist_ok=True)
-        report.save(dst / "crop_qc_report.csv")
-        report.save_summary(dst / "crop_qc_summary.json")
-        print(f"\nQC report: {dst / 'crop_qc_report.csv'}")
-        print(f"QC summary: {dst / 'crop_qc_summary.json'}")
-        print(f"  Total cases checked : {len(report)}")
-        print(f"  Failed (voxels lost): {report.n_failed()}")
+    if (src / "dataset.json").exists():
+        shutil.copy2(src / "dataset.json", dst / "dataset.json")
 
     if errors:
         print(f"\n{len(errors)} case(s) with errors:")
-        for e in errors:
-            print(f"  {e}")
+        print("\n".join(f"  {e}" for e in errors))
         sys.exit(1)
-
     print("\nDone.")
 
 
