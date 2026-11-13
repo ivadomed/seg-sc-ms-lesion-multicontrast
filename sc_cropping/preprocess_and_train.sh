@@ -22,7 +22,7 @@ echo "Hostname: $(hostname)"
 # nnUNet paths export
 export nnUNet_raw="/home/plbenveniste/net/ms-lesion-agnostic/202611_retrain_sc_crop/data/nnUNet_raw"
 export nnUNet_preprocessed="/home/plbenveniste/net/ms-lesion-agnostic/202611_retrain_sc_crop/data/nnUNet_preprocessed"
-export nnUNet_results="/home/plbenveniste/net/ms-lesion-agnostic/202611_retrain_sc_crop/data"
+export nnUNet_results="/home/plbenveniste/net/ms-lesion-agnostic/202611_retrain_sc_crop/data/nnUNet_results"
 
 # Dataset values
 input_dataset="Dataset902_msLesionAgnostic"
@@ -31,7 +31,7 @@ dataset_name="Dataset${dataset_number}_msLesionAgnostic"
 configurations="3d_fullres"
 planner="nnUNetPlannerResEncL"
 plans="nnUNetResEncUNetLPlans"   # plans name created by nnUNetPlannerResEncL
-trainer="nnUNetTrainerDiceCELoss_noSmooth_4000epochs"
+trainer="nnUNetTrainerDiceCELoss_noSmooth"
 fold=0
 gpu=3
 n_workers=8                      # cases resampled in parallel
