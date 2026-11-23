@@ -1,0 +1,20 @@
+{
+    "manifestVersion": "1.0",
+    "project": {
+        "name": "MS-SC-FoundationSpineFoundation",
+        "description": "Registry of datasets and how to fetch them",
+        "owner": "Neuropoly"
+    },
+    "datasets": [
+        {
+            "id": "dataset-1",
+            "name": "umass-ms-siemens-espree1.5",
+            "description": "TODOt",
+            "version": "v1.0",
+            "source": {
+                "url": "git@data.neuro.polymtl.ca:datasets/umass-ms-siemens-espree1.5"
+                }
+        }
+        
+    ]
+}
